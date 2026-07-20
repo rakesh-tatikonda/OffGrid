@@ -1,0 +1,75 @@
+# Save this file as: .github/workflows/ios-build.yml in your repo root
+#
+# What this does: on every push/PR, spins up a macOS runner with Xcode
+# preinstalled, checks out your repo (pulling in the whisper.cpp/llama.cpp
+# submodules), and does a simulator build with code signing turned off —
+# so it works with zero Apple Developer account setup. This is a compile
+# check, not a device install: you get pass/fail + full build logs, no
+# visual simulator output.
+#
+# BEFORE THIS WILL WORK, replace the two placeholders below:
+#   OffGrid.xcodeproj  -> your actual .xcodeproj (or .xcworkspace) name
+#   OffGrid            -> your actual scheme name
+# Find both by running `xcodebuild -list` inside your project folder
+# once you're on any Mac session, or just check what Xcode named them
+# when the project was created.
+
+name: iOS Build Check
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch: {}   # lets you trigger it manually from the Actions tab
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive   # pulls in ThirdParty/whisper.cpp and ThirdParty/llama.cpp
+
+      - name: Show available Xcode versions
+        run: ls /Applications | grep Xcode
+
+      - name: Select Xcode version
+        # macos-15 runners ship several Xcode versions side by side.
+        # Pin one explicitly so builds don't silently shift when GitHub
+        # updates the runner image. Adjust the version to whatever the
+        # previous step lists as available.
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project from project.yml
+        # This is what replaces "open Xcode and create a new project" —
+        # reads project.yml and writes OffGrid.xcodeproj fresh on the
+        # runner, every run. Nobody commits the generated .xcodeproj itself.
+        run: xcodegen generate
+
+      - name: List schemes (sanity check)
+        run: xcodebuild -list -project OffGrid.xcodeproj
+
+      - name: Build for iOS Simulator
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project OffGrid.xcodeproj \
+            -scheme OffGrid \
+            -sdk iphonesimulator \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: ~/Library/Logs/DiagnosticReports/
+          if-no-files-found: ignore
