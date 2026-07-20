@@ -21,38 +21,35 @@ jobs:
         run: ./scripts/fix-thirdparty-submodules.sh
 
       - name: Select Xcode version
-        # Forcing Xcode 16.2 explicitly
         run: sudo xcode-select -s /Applications/Xcode_16.2.app
 
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Force iOS 18.0 Target for Git CI Stability
-        # This step overwrites the rigid 18.2 dependency inside project.yml
-        # so Xcode doesn't fail with Exit Code 70.
+      - name: Force iOS 18.0 Target for CI Compatibility
+        # This overwrites the rigid 18.2 requirements inside project.yml 
+        # so Xcode doesn't look for an uninstalled platform package.
         run: |
           if [ -f project.yml ]; then
             sed -i '' 's/deploymentTarget: "18.2"/deploymentTarget: "18.0"/g' project.yml || true
             sed -i '' 's/iOS: 18.2/iOS: 18.0/g' project.yml || true
-            echo "Successfully updated project.yml to use iOS 18.0 SDK."
-          else
-            echo "Warning: project.yml not found. Checking if target modification needs to happen elsewhere."
+            echo "Updated project.yml target baseline."
           fi
 
       - name: Generate Xcode project from project.yml
         run: xcodegen generate
 
-      - name: Override Scheme Deployment Target
-        # In case the scheme or build settings hardcode the 18.2 target SDK,
-        # this forces the generated project file to accept the runner's available SDK.
+      - name: Force Scheme Target Adjustments
+        # Strips out any nested references to 18.2 inside the generated project files
         run: |
           find OffGrid.xcodeproj -name "project.pbxproj" -exec sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = 18.2/IPHONEOS_DEPLOYMENT_TARGET = 18.0/g' {} + || true
 
       - name: List schemes (sanity check)
         run: xcodebuild -list -project OffGrid.xcodeproj
 
-      - name: Build for iOS Simulator
+      - name: Build for iOS Simulator (Apple Silicon native)
         run: |
+          set -o pipefail
           xcodebuild build \
             -project OffGrid.xcodeproj \
             -scheme OffGrid \
@@ -60,15 +57,5 @@ jobs:
             -destination "generic/platform=iOS Simulator" \
             CODE_SIGNING_ALLOWED=NO \
             ONLY_ACTIVE_ARCH=YES \
-            ARCHS="x86_64" \
+            ARCHS="arm64" \
             COMPILER_INDEX_STORE_ENABLE=NO
-
-
-
-      - name: Upload build log on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log
-          path: ~/Library/Logs/DiagnosticReports/
-          if-no-files-found: ignore
