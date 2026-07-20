@@ -89,12 +89,28 @@ let package = Package(
             resources: [
                 .process("ggml/src/ggml-metal/ggml-metal.metal"),
             ],
+            // NOTE: publicHeadersPath is whisper.cpp's OWN public API
+            // (whisper.h / parakeet.h) -- that's what OffGrid imports.
+            // It is NOT the same as ggml's headers, which live in two
+            // other places entirely: ggml/include (ggml's public API --
+            // ggml.h, ggml-backend.h, ggml-cpu.h, ggml-metal.h, etc) and
+            // ggml/src itself (ggml's PRIVATE/internal headers --
+            // ggml-impl.h, ggml-common.h, ggml-quants.h, etc, which
+            // ggml-cpu/ggml-metal/ggml-blas source files reference via
+            // unqualified `#include "ggml-impl.h"` with no path prefix,
+            // relying on the build adding ggml/src itself as a search
+            // path -- upstream's CMake build does this for every ggml
+            // target; SwiftPM won't unless told to here.
             publicHeadersPath: "include",
             cSettings: [
+                .headerSearchPath("ggml/include"),
+                .headerSearchPath("ggml/src"),
                 .define("WHISPER_COREML", to: "1"),
                 .unsafeFlags(["-O3"]),
             ],
             cxxSettings: [
+                .headerSearchPath("ggml/include"),
+                .headerSearchPath("ggml/src"),
                 .define("WHISPER_COREML", to: "1"),
             ],
             linkerSettings: [
@@ -133,9 +149,23 @@ let package = Package(
             resources: [
                 .process("ggml/src/ggml-metal/ggml-metal.metal"),
             ],
+            // See the matching note on WhisperEngine above: ggml/include
+            // (ggml's public API) and ggml/src (ggml's private/internal
+            // headers) both need to be explicit search paths, for both
+            // C and C++ compilation -- llama.cpp's own src/*.cpp files
+            // and ggml-backend.cpp/ggml-metal.cpp etc need these too,
+            // which is why this target now also has a cxxSettings block
+            // (it didn't have one before -- C++ files got none of the
+            // C-only search paths that cSettings alone would add).
             publicHeadersPath: "include",
             cSettings: [
+                .headerSearchPath("ggml/include"),
+                .headerSearchPath("ggml/src"),
                 .unsafeFlags(["-O3"]),
+            ],
+            cxxSettings: [
+                .headerSearchPath("ggml/include"),
+                .headerSearchPath("ggml/src"),
             ],
             linkerSettings: [
                 .linkedFramework("Accelerate"),
