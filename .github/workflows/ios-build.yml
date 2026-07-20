@@ -34,13 +34,9 @@ jobs:
           submodules: recursive   # pulls in ThirdParty/whisper.cpp and ThirdParty/llama.cpp
 
       - name: Fix ThirdParty submodules (strip main.swift / nested Package.swift)
-        # See scripts/fix-thirdparty-submodules.sh for the full explanation.
-        # This is REQUIRED every time the submodules are freshly checked
-        # out -- without it, package resolution fails with "library
-        # product 'WhisperEngine'/'LlamaEngine' should not contain
-        # executable targets".
-        run: ./scripts/fix-thirdparty-submodules.sh
+        run: bash scripts/fix-thirdparty-submodules.sh
 
+        
       - name: Show available Xcode versions
         run: ls /Applications | grep Xcode
 
