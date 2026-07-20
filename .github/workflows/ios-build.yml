@@ -105,6 +105,9 @@ jobs:
           echo "Using simulator UDID: $UDID"
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
 
+            # Remove the entire "Resolve an available iOS Simulator destination" step 
+      # that uses jq, and update your build step to look like this:
+
       - name: Build for iOS Simulator
         run: |
           set -o pipefail
@@ -112,9 +115,10 @@ jobs:
             -project OffGrid.xcodeproj \
             -scheme OffGrid \
             -sdk iphonesimulator \
-            -destination "id=${{ steps.destination.outputs.udid }}" \
+            -destination "generic/platform=iOS Simulator" \
             CODE_SIGNING_ALLOWED=NO \
             ONLY_ACTIVE_ARCH=NO
+
 
       - name: Upload build log on failure
         if: failure()
