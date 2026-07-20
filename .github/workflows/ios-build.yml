@@ -50,5 +50,7 @@ jobs:
             -destination "generic/platform=iOS Simulator" \
             CODE_SIGNING_ALLOWED=NO \
             ONLY_ACTIVE_ARCH=YES \
-            GCC_PREPROCESSOR_DEFINITIONS='$(inherited) GGML_NO_ACCELERATE=1' \
-            COMPILER_INDEX_STORE_ENABLE=NO
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            GCC_TREAT_WARNINGS_AS_ERRORS=NO \
+            SWIFT_TREAT_WARNINGS_AS_ERRORS=NO \
+            GCC_PREPROCESSOR_DEFINITIONS='$(inherited) GGML_NO_ACCELERATE=1 GGML_USE_CPU=1'
