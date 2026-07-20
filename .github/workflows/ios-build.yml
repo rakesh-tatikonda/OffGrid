@@ -21,33 +21,24 @@ jobs:
         run: ./scripts/fix-thirdparty-submodules.sh
 
       - name: Select Xcode version
-        run: sudo xcode-select -s /Applications/Xcode_16.2.app
+        # Binds the active platform terminal to Xcode 16.2
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
+
+      - name: Install Missing iOS 18.2 Platform Runtime
+        # This forces Apple's package engine to mount the missing 18.2 core layout on the runner.
+        # This completely stops the "iOS 18.2 is not installed" block.
+        run: xcodebuild -downloadPlatform iOS -buildVersion 18.2
 
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Force iOS 18.0 Target for CI Compatibility
-        # This overwrites the rigid 18.2 requirements inside project.yml 
-        # so Xcode doesn't look for an uninstalled platform package.
-        run: |
-          if [ -f project.yml ]; then
-            sed -i '' 's/deploymentTarget: "18.2"/deploymentTarget: "18.0"/g' project.yml || true
-            sed -i '' 's/iOS: 18.2/iOS: 18.0/g' project.yml || true
-            echo "Updated project.yml target baseline."
-          fi
-
       - name: Generate Xcode project from project.yml
         run: xcodegen generate
-
-      - name: Force Scheme Target Adjustments
-        # Strips out any nested references to 18.2 inside the generated project files
-        run: |
-          find OffGrid.xcodeproj -name "project.pbxproj" -exec sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = 18.2/IPHONEOS_DEPLOYMENT_TARGET = 18.0/g' {} + || true
 
       - name: List schemes (sanity check)
         run: xcodebuild -list -project OffGrid.xcodeproj
 
-      - name: Build for iOS Simulator (Apple Silicon native)
+      - name: Build for iOS Simulator
         run: |
           set -o pipefail
           xcodebuild build \
