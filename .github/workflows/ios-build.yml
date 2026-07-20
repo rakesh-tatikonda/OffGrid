@@ -20,13 +20,16 @@ jobs:
       - name: Fix ThirdParty submodules (strip main.swift / nested Package.swift)
         run: ./scripts/fix-thirdparty-submodules.sh
 
-      - name: Select Xcode version
-        # Binds the active platform terminal to Xcode 16.2
+           - name: Select Xcode version
         run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
 
+      - name: Wake Up Headless iOS Simulator Daemon
+        # Fixes the GitHub Actions "Unable to connect to simulator" bug by warming up the background process.
+        run: |
+          xcrun simctl list > /dev/null
+          sleep 5
+
       - name: Install Missing iOS 18.2 Platform Runtime
-        # This forces Apple's package engine to mount the missing 18.2 core layout on the runner.
-        # This completely stops the "iOS 18.2 is not installed" block.
         run: xcodebuild -downloadPlatform iOS -buildVersion 18.2
 
       - name: Install XcodeGen
