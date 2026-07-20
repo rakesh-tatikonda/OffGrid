@@ -83,22 +83,21 @@ jobs:
         # with "Unable to find a destination matching..." before the build
         # even starts. Instead, pick whatever iOS simulator actually
         # exists on this runner right now and build against its UDID.
+        # (Single-line jq here on purpose -- a multi-line embedded script
+        # inside a YAML block scalar has to stay indented at or beyond the
+        # block's baseline indentation on every line, which is an easy way
+        # to accidentally break the workflow's YAML, as happened here.)
         id: destination
         run: |
           set -euo pipefail
-          UDID=$(xcrun simctl list devices available -j \
-            | python3 -c '
-import json, sys
-data = json.load(sys.stdin)["devices"]
-for runtime, devices in data.items():
-    if "iOS" not in runtime:
-        continue
-    for d in devices:
-        if d.get("isAvailable", True):
-            print(d["udid"])
-            sys.exit(0)
-sys.exit(1)
-')
+          UDID=$(xcrun simctl list devices available -j | jq -r '
+            .devices
+            | to_entries[]
+            | select(.key | test("iOS"))
+            | .value[]
+            | select(.isAvailable)
+            | .udid
+          ' | head -n1)
           if [ -z "$UDID" ]; then
             echo "No available iOS Simulator found on this runner -- see the runtimes/devices list in the previous step." >&2
             exit 1
