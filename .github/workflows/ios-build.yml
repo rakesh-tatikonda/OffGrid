@@ -34,9 +34,13 @@ jobs:
           submodules: recursive   # pulls in ThirdParty/whisper.cpp and ThirdParty/llama.cpp
 
       - name: Fix ThirdParty submodules (strip main.swift / nested Package.swift)
-        run: bash scripts/fix-thirdparty-submodules.sh
+        # See scripts/fix-thirdparty-submodules.sh for the full explanation.
+        # This is REQUIRED every time the submodules are freshly checked
+        # out -- without it, package resolution fails with "library
+        # product 'WhisperEngine'/'LlamaEngine' should not contain
+        # executable targets".
+        run: ./scripts/fix-thirdparty-submodules.sh
 
-        
       - name: Show available Xcode versions
         run: ls /Applications | grep Xcode
 
@@ -59,6 +63,49 @@ jobs:
       - name: List schemes (sanity check)
         run: xcodebuild -list -project OffGrid.xcodeproj
 
+      - name: Show installed simulator runtimes and devices
+        # Debugging aid for exactly the failure this workflow used to hit:
+        # a hardcoded 'name=iPhone 16,OS=latest' destination silently not
+        # resolving to anything on this runner/Xcode combination. GitHub's
+        # macos-15 image ships several Xcode versions side by side, and
+        # simulator runtimes aren't always fully provisioned for whichever
+        # one you xcode-select into -- this prints exactly what IS
+        # available so a future failure here is easy to diagnose from the
+        # log instead of guessing.
+        run: |
+          xcrun simctl list runtimes
+          echo "---"
+          xcrun simctl list devices available
+
+      - name: Resolve an available iOS Simulator destination
+        # Don't hardcode a device name + "OS=latest": if the runner image
+        # doesn't have that exact pairing provisioned, xcodebuild fails
+        # with "Unable to find a destination matching..." before the build
+        # even starts. Instead, pick whatever iOS simulator actually
+        # exists on this runner right now and build against its UDID.
+        id: destination
+        run: |
+          set -euo pipefail
+          UDID=$(xcrun simctl list devices available -j \
+            | python3 -c '
+import json, sys
+data = json.load(sys.stdin)["devices"]
+for runtime, devices in data.items():
+    if "iOS" not in runtime:
+        continue
+    for d in devices:
+        if d.get("isAvailable", True):
+            print(d["udid"])
+            sys.exit(0)
+sys.exit(1)
+')
+          if [ -z "$UDID" ]; then
+            echo "No available iOS Simulator found on this runner -- see the runtimes/devices list in the previous step." >&2
+            exit 1
+          fi
+          echo "Using simulator UDID: $UDID"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
       - name: Build for iOS Simulator
         run: |
           set -o pipefail
@@ -66,7 +113,7 @@ jobs:
             -project OffGrid.xcodeproj \
             -scheme OffGrid \
             -sdk iphonesimulator \
-            -destination 'generic/platform=iOS Simulator' \
+            -destination "id=${{ steps.destination.outputs.udid }}" \
             CODE_SIGNING_ALLOWED=NO \
             ONLY_ACTIVE_ARCH=NO
 
