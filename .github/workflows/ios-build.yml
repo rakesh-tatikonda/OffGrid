@@ -51,7 +51,7 @@ jobs:
         # previous step lists as available.
         run: sudo xcode-select -s /Applications/Xcode_16.2.app
 
-            - name: Install XcodeGen
+      - name: Install XcodeGen
         run: brew install xcodegen
 
       - name: Lower Deployment Target for CI
