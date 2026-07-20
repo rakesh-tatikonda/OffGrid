@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # OffGrid — Architecture & Build Notes
 
 Offline-first iOS transcription/translation/summarization app. Swift 5.10,
@@ -90,3 +91,6 @@ is retained only as a filename label for display, not a live file
 reference. If a future requirement calls for keeping the source media
 too, that means deliberately opting a given import out of the scrub
 policy — it should not be a side effect of adding persistence.
+=======
+# OffGrid
+>>>>>>> 81791caa4c268f1c20732ea9f941af2ee835791d
