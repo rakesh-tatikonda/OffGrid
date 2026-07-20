@@ -54,4 +54,4 @@ jobs:
             GCC_TREAT_WARNINGS_AS_ERRORS=NO \
             SWIFT_TREAT_WARNINGS_AS_ERRORS=NO \
             GCC_PREPROCESSOR_DEFINITIONS='$(inherited) GGML_NO_ACCELERATE=1 GGML_USE_CPU=1' \
-            -quiet
+            OTHER_SWIFT_FLAGS="-Xfrontend -serialize-debugging-options"
