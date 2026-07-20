@@ -105,7 +105,7 @@ jobs:
           echo "Using simulator UDID: $UDID"
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
 
-           - name: Build for iOS Simulator
+      - name: Build for iOS Simulator
         run: |
           set -o pipefail
           xcodebuild build \
