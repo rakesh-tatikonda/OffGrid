@@ -50,6 +50,21 @@ for dir in ThirdParty/whisper.cpp ThirdParty/llama.cpp; do
   # aren't needed to build the library targets and are harmless to
   # remove, but keeping them out avoids any ambiguity during resolution.
   find "$dir" -name "Package.swift" -print -delete
+
+  # Remove build-system files that aren't source code. Because
+  # ThirdParty/Package.swift declares `sources: ["ggml/src", "src"]`
+  # explicitly, SwiftPM force-classifies EVERY non-header file under
+  # those paths as a compile source (this is a real, separate SwiftPM
+  # behavior from the main.swift issue above -- once `sources:` is
+  # explicit, its automatic "is this actually compilable code" check is
+  # skipped). Both repos vendor a CMakeLists.txt in nearly every
+  # subfolder (their real build system, which we don't use at all -- we
+  # build via SwiftPM/Xcode, never CMake) plus a couple of .cmake helper
+  # modules under ggml-cpu/cmake. Left in place, Xcode tries to "compile"
+  # them and fails with "no rule to process file ... for architecture
+  # x86_64". None of these are needed for anything we do here.
+  find "$dir" -name "CMakeLists.txt" -print -delete
+  find "$dir" -name "*.cmake" -print -delete
 done
 
 echo "Done. Safe to open Xcode / run xcodebuild now."
