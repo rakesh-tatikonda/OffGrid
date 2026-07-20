@@ -20,6 +20,12 @@
 // reshuffle directories across releases, so check your actual vendored
 // commit's tree and adjust `sources:`/`publicHeadersPath:` to match
 // before this will build.
+//
+// REQUIRED SETUP STEP: after `git submodule update --init --recursive`,
+// run `./scripts/fix-thirdparty-submodules.sh` once before opening Xcode
+// or running xcodebuild (locally or in CI). Without it, resolution fails
+// with "library product 'WhisperEngine'/'LlamaEngine' should not contain
+// executable targets" -- see that script for the full explanation.
 
 import PackageDescription
 
@@ -34,7 +40,26 @@ let package = Package(
         .target(
             name: "WhisperEngine",
             path: "whisper.cpp",
-            exclude: ["tests", "examples", "models", "bindings", "CMakeLists.txt"],
+            // NOTE: ggml/src contains a subfolder per hardware backend
+            // (CUDA, Vulkan, SYCL, HIP, ROCm/MUSA, OpenCL, CANN, etc).
+            // Upstream's CMake build only ever compiles ggml-cpu
+            // unconditionally and adds the rest behind explicit
+            // GGML_<BACKEND> flags -- but a plain `sources: ["ggml/src"]`
+            // glob has no such gating, so SwiftPM will try to compile
+            // every one of these, and fail hard the moment it hits code
+            // that needs the CUDA toolkit / Vulkan SDK / oneAPI / ROCm,
+            // none of which exist on a normal Mac. We only want the CPU
+            // backend plus Metal + BLAS (Accelerate), matching the
+            // frameworks linked below, so the rest are excluded here.
+            exclude: [
+                "tests", "examples", "models", "bindings", "CMakeLists.txt",
+                "src/openvino",
+                "ggml/src/ggml-cann", "ggml/src/ggml-cuda", "ggml/src/ggml-hexagon",
+                "ggml/src/ggml-hip", "ggml/src/ggml-musa", "ggml/src/ggml-opencl",
+                "ggml/src/ggml-openvino", "ggml/src/ggml-rpc", "ggml/src/ggml-sycl",
+                "ggml/src/ggml-virtgpu", "ggml/src/ggml-vulkan", "ggml/src/ggml-webgpu",
+                "ggml/src/ggml-zdnn", "ggml/src/ggml-zendnn",
+            ],
             sources: ["ggml/src", "src"],
             publicHeadersPath: "include",
             cSettings: [
@@ -54,7 +79,16 @@ let package = Package(
         .target(
             name: "LlamaEngine",
             path: "llama.cpp",
-            exclude: ["tests", "examples", "models", "CMakeLists.txt"],
+            // See the matching note on WhisperEngine above -- same fix,
+            // same reason (unwanted hardware backends under ggml/src).
+            exclude: [
+                "tests", "examples", "models", "CMakeLists.txt",
+                "ggml/src/ggml-cann", "ggml/src/ggml-cuda", "ggml/src/ggml-et",
+                "ggml/src/ggml-hexagon", "ggml/src/ggml-hip", "ggml/src/ggml-musa",
+                "ggml/src/ggml-opencl", "ggml/src/ggml-openvino", "ggml/src/ggml-rpc",
+                "ggml/src/ggml-sycl", "ggml/src/ggml-virtgpu", "ggml/src/ggml-vulkan",
+                "ggml/src/ggml-webgpu", "ggml/src/ggml-zdnn", "ggml/src/ggml-zendnn",
+            ],
             sources: ["ggml/src", "src"],
             publicHeadersPath: "include",
             cSettings: [
