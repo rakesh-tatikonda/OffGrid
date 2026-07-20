@@ -105,16 +105,17 @@ jobs:
           echo "Using simulator UDID: $UDID"
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
 
-      - name: Build for iOS Simulator
+           - name: Build for iOS Simulator
         run: |
           set -o pipefail
           xcodebuild build \
             -project OffGrid.xcodeproj \
             -scheme OffGrid \
             -sdk iphonesimulator \
-            -destination "id=${{ steps.destination.outputs.udid }}" \
+            -destination "generic/platform=iOS Simulator" \
             CODE_SIGNING_ALLOWED=NO \
-            ONLY_ACTIVE_ARCH=NO
+            ONLY_ACTIVE_ARCH=NO \
+            -resultBundlePath BuildResults.xcresult
 
       - name: Upload build log on failure
         if: failure()
