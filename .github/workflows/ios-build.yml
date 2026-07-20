@@ -43,7 +43,6 @@ jobs:
 
       - name: Build for iOS Simulator
         run: |
-          set -o pipefail
           xcodebuild build \
             -project OffGrid.xcodeproj \
             -scheme OffGrid \
@@ -51,5 +50,5 @@ jobs:
             -destination "generic/platform=iOS Simulator" \
             CODE_SIGNING_ALLOWED=NO \
             ONLY_ACTIVE_ARCH=YES \
-            ARCHS="arm64" \
+            GCC_PREPROCESSOR_DEFINITIONS='$(inherited) GGML_NO_ACCELERATE=1' \
             COMPILER_INDEX_STORE_ENABLE=NO
