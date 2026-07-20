@@ -85,16 +85,15 @@ let package = Package(
             path: "llama.cpp",
             // See the matching note on WhisperEngine above -- same fix,
             // same reason (unwanted hardware backends under ggml/src).
-           exclude: [
-        "tests", "examples", "models", "bindings", "CMakeLists.txt",
-        "src/openvino",
-        "ggml/src/ggml-cann", "ggml/src/ggml-cuda", "ggml/src/ggml-hexagon",
-        "ggml/src/ggml-hip", "ggml/src/ggml-musa", "ggml/src/ggml-opencl",
-        "ggml/src/ggml-openvino", "ggml/src/ggml-rpc", "ggml/src/ggml-sycl",
-        "ggml/src/ggml-virtgpu", "ggml/src/ggml-vulkan", "ggml/src/ggml-webgpu",
-        "ggml/src/ggml-zdnn", "ggml/src/ggml-zendnn",
-        "ggml/src/ggml-metal/ggml-metal.metal",   
-    ],
+          exclude: [
+    "tests", "examples", "models", "CMakeLists.txt",
+    "ggml/src/ggml-cann", "ggml/src/ggml-cuda", "ggml/src/ggml-et",
+    "ggml/src/ggml-hexagon", "ggml/src/ggml-hip", "ggml/src/ggml-musa",
+    "ggml/src/ggml-opencl", "ggml/src/ggml-openvino", "ggml/src/ggml-rpc",
+    "ggml/src/ggml-sycl", "ggml/src/ggml-virtgpu", "ggml/src/ggml-vulkan",
+    "ggml/src/ggml-webgpu", "ggml/src/ggml-zdnn", "ggml/src/ggml-zendnn",
+    "ggml/src/ggml-metal/ggml-metal.metal",
+],
     sources: ["ggml/src", "src"],
     resources: [
         .process("ggml/src/ggml-metal/ggml-metal.metal"),  
