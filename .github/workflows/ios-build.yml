@@ -51,59 +51,20 @@ jobs:
         # previous step lists as available.
         run: sudo xcode-select -s /Applications/Xcode_16.2.app
 
-      - name: Install XcodeGen
+            - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Lower Deployment Target for CI
+        # Overrides iOS 18.2 to use the pre-installed iOS 18.0 SDK on the GitHub runner
+        run: |
+          sed -i '' 's/deploymentTarget: "18.2"/deploymentTarget: "18.0"/g' project.yml || true
+          sed -i '' 's/iOS: 18.2/iOS: 18.0/g' project.yml || true
+
       - name: Generate Xcode project from project.yml
-        # This is what replaces "open Xcode and create a new project" —
-        # reads project.yml and writes OffGrid.xcodeproj fresh on the
-        # runner, every run. Nobody commits the generated .xcodeproj itself.
         run: xcodegen generate
 
       - name: List schemes (sanity check)
         run: xcodebuild -list -project OffGrid.xcodeproj
-
-      - name: Show installed simulator runtimes and devices
-        # Debugging aid for exactly the failure this workflow used to hit:
-        # a hardcoded 'name=iPhone 16,OS=latest' destination silently not
-        # resolving to anything on this runner/Xcode combination. GitHub's
-        # macos-15 image ships several Xcode versions side by side, and
-        # simulator runtimes aren't always fully provisioned for whichever
-        # one you xcode-select into -- this prints exactly what IS
-        # available so a future failure here is easy to diagnose from the
-        # log instead of guessing.
-        run: |
-          xcrun simctl list runtimes
-          echo "---"
-          xcrun simctl list devices available
-
-      - name: Resolve an available iOS Simulator destination
-        # Don't hardcode a device name + "OS=latest": if the runner image
-        # doesn't have that exact pairing provisioned, xcodebuild fails
-        # with "Unable to find a destination matching..." before the build
-        # even starts. Instead, pick whatever iOS simulator actually
-        # exists on this runner right now and build against its UDID.
-        # (Single-line jq here on purpose -- a multi-line embedded script
-        # inside a YAML block scalar has to stay indented at or beyond the
-        # block's baseline indentation on every line, which is an easy way
-        # to accidentally break the workflow's YAML, as happened here.)
-        id: destination
-        run: |
-          set -euo pipefail
-          UDID=$(xcrun simctl list devices available -j | jq -r '
-            .devices
-            | to_entries[]
-            | select(.key | test("iOS"))
-            | .value[]
-            | select(.isAvailable)
-            | .udid
-          ' | head -n1)
-          if [ -z "$UDID" ]; then
-            echo "No available iOS Simulator found on this runner -- see the runtimes/devices list in the previous step." >&2
-            exit 1
-          fi
-          echo "Using simulator UDID: $UDID"
-          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
 
       - name: Build for iOS Simulator
         run: |
@@ -112,14 +73,9 @@ jobs:
             -project OffGrid.xcodeproj \
             -scheme OffGrid \
             -sdk iphonesimulator \
-            -destination "id=${{ steps.destination.outputs.udid }}" \
+            -destination "generic/platform=iOS Simulator" \
             CODE_SIGNING_ALLOWED=NO \
             ONLY_ACTIVE_ARCH=NO
 
-      - name: Upload build log on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log
           path: ~/Library/Logs/DiagnosticReports/
           if-no-files-found: ignore
