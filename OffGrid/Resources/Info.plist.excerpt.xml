@@ -1,0 +1,26 @@
+<!--
+  Info.plist.excerpt.xml — merge these keys into your target's Info.plist.
+  Do NOT add UIBackgroundModes, and do NOT add NSAllowsArbitraryLoads —
+  their absence is what keeps this app's network surface confined to the
+  single ephemeral URLSession in URLStreamDownloader.swift.
+-->
+<plist version="1.0">
+<dict>
+    <!-- No UIBackgroundModes key at all: no background fetch, no
+         background audio, no background processing. Anything the app
+         is doing stops the instant it is backgrounded. -->
+
+    <!-- Leave App Transport Security at its secure default (HTTPS-only,
+         no exceptions). Do not add NSAppTransportSecurity /
+         NSAllowsArbitraryLoads. -->
+
+    <key>ITSAppUsesNonExemptEncryption</key>
+    <false/>
+
+    <key>UIFileSharingEnabled</key>
+    <false/>
+
+    <key>LSSupportsOpeningDocumentsInPlace</key>
+    <false/>
+</dict>
+</plist>
