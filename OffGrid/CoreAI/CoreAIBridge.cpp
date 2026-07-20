@@ -12,8 +12,8 @@
 //
 #include "CoreAIBridge.h"
 
-#include "whisper.h"      // from whisper.cpp
-#include "llama.h"        // from llama.cpp
+#include <WhisperEngine/whisper.h>
+#include <LlamaEngine/llama.h>
 
 #include <cstring>
 #include <cstdlib>
