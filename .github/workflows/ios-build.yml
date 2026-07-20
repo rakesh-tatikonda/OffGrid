@@ -51,7 +51,7 @@ jobs:
       - name: List schemes (sanity check)
         run: xcodebuild -list -project OffGrid.xcodeproj
 
-            - name: Build for iOS Simulator
+      - name: Build for iOS Simulator
         run: |
           xcodebuild build \
             -project OffGrid.xcodeproj \
