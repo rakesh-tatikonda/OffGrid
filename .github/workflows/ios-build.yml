@@ -20,17 +20,11 @@ jobs:
       - name: Fix ThirdParty submodules (strip main.swift / nested Package.swift)
         run: ./scripts/fix-thirdparty-submodules.sh
 
-      - name: Select Xcode version
-        run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
-
       - name: Wake Up Headless iOS Simulator Daemon
-        # Fixes the GitHub Actions "Unable to connect to simulator" bug by warming up the background process.
+        # Warms up the background process to avoid the "Unable to connect to simulator" bug.
         run: |
           xcrun simctl list > /dev/null
           sleep 5
-
-      - name: Install Missing iOS 18.2 Platform Runtime
-        run: xcodebuild -downloadPlatform iOS -buildVersion 18.2
 
       - name: Install XcodeGen
         run: brew install xcodegen
