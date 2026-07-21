@@ -74,8 +74,8 @@ let package = Package(
                 // parakeet.cpp return these directly, so they must be defined.
                 // Set to match the pinned whisper.cpp submodule if you care
                 // about the reported version string.
-                .define("WHISPER_VERSION", to: "\"1.9.1\""),
-                .define("PARAKEET_VERSION", to: "\"1.9.1\""),
+                .define("WHISPER_VERSION", to: "\"1.9.0\""),
+                .define("PARAKEET_VERSION", to: "\"1.9.0\""),
                 .headerSearchPath("ggml/src"),
                 .headerSearchPath("ggml/include"),
                 .headerSearchPath("ggml/src/ggml-cpu")
