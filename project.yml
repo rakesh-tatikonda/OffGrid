@@ -37,6 +37,11 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         ENABLE_BITCODE: NO
         CLANG_CXX_LANGUAGE_STANDARD: "c++17"
+        
+        # Add these lines to fix the ggml.h file not found error:
+        HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/ThirdParty/whisper.cpp/ggml/include"
+          - "$(SRCROOT)/ThirdParty/llama.cpp/ggml/include"
 
     # Generates the real Info.plist from these keys directly — encodes the
     # same "no background modes, no ATS exceptions" intent as the excerpt
