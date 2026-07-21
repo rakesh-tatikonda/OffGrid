@@ -40,12 +40,16 @@ let package = Package(
             publicHeadersPath: "include",
             cSettings: [
                 .define("GGML_USE_CPU", to: "1"),
-                .define("GGML_NO_ACCELERATE", to: "1") 
+                .define("GGML_NO_ACCELERATE", to: "1"),
+                .headerSearchPath("ggml/src"),
+                .headerSearchPath("ggml/include"),
+                .headerSearchPath("ggml/src/ggml-cpu")
             ],
             cxxSettings: [
                 .define("GGML_USE_CPU", to: "1"),
                 .headerSearchPath("ggml/src"),
-                .headerSearchPath("ggml/include")
+                .headerSearchPath("ggml/include"),
+                .headerSearchPath("ggml/src/ggml-cpu")
             ]
         ),
         .target(
@@ -78,10 +82,17 @@ let package = Package(
                 "src"
             ],
             publicHeadersPath: "include",
+            cSettings: [
+                .define("GGML_USE_CPU", to: "1"),
+                .headerSearchPath("ggml/src"),
+                .headerSearchPath("ggml/include"),
+                .headerSearchPath("ggml/src/ggml-cpu")
+            ],
             cxxSettings: [
                 .define("GGML_USE_CPU", to: "1"),
                 .headerSearchPath("ggml/src"),
-                .headerSearchPath("ggml/include")
+                .headerSearchPath("ggml/include"),
+                .headerSearchPath("ggml/src/ggml-cpu")
             ]
         )
     ],
