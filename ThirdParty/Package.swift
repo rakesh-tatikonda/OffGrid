@@ -71,6 +71,10 @@ let package = Package(
             cSettings: [
                 .define("GGML_USE_CPU", to: "1"),
                 .define("GGML_NO_ACCELERATE", to: "1"),
+                // Normally injected by ggml's CMake build; SwiftPM doesn't run
+                // CMake, so define them here or ggml.c fails to compile.
+                .define("GGML_VERSION", to: "\"0.0.0\""),
+                .define("GGML_COMMIT", to: "\"unknown\""),
                 .headerSearchPath("ggml/src"),
                 .headerSearchPath("ggml/include"),
                 .headerSearchPath("ggml/src/ggml-cpu")
@@ -144,6 +148,10 @@ let package = Package(
             publicHeadersPath: "include",
             cSettings: [
                 .define("GGML_USE_CPU", to: "1"),
+                // Normally injected by ggml's CMake build; SwiftPM doesn't run
+                // CMake, so define them here or ggml.c fails to compile.
+                .define("GGML_VERSION", to: "\"0.0.0\""),
+                .define("GGML_COMMIT", to: "\"unknown\""),
                 .headerSearchPath("ggml/src"),
                 .headerSearchPath("ggml/include"),
                 .headerSearchPath("ggml/src/ggml-cpu"),
