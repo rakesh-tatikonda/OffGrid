@@ -12,6 +12,7 @@
 //  fully local, which is what this manager is scoped to.)
 //
 import Foundation
+import Observation   // provides the @Observable macro; StoreKit/Foundation do NOT re-export it
 import StoreKit
 
 enum StoreError: Error, LocalizedError {
