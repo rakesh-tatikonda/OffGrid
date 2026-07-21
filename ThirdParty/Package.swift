@@ -35,6 +35,13 @@ let package = Package(
                 "ggml/src/ggml-cpu/arch/s390",
                 "ggml/src/ggml-cpu/arch/loongarch",
                 "ggml/src/ggml-cpu/arch/wasm",
+                // CoreML and OpenVINO are opt-in acceleration backends. The
+                // default CPU build does not compile them (CMake gates them
+                // behind WHISPER_COREML / WHISPER_OPENVINO). OpenVINO needs an
+                // SDK that isn't present; CoreML needs the -DWHISPER_USE_COREML
+                // path wired up. Exclude both so only the CPU path is built.
+                "src/coreml",
+                "src/openvino",
                 // Ignore test files, examples, and CLI tools
                 "tests",
                 "examples",
@@ -57,6 +64,12 @@ let package = Package(
             ],
             cxxSettings: [
                 .define("GGML_USE_CPU", to: "1"),
+                // Normally injected by CMake (project VERSION). whisper.cpp and
+                // parakeet.cpp return these directly, so they must be defined.
+                // Set to match the pinned whisper.cpp submodule if you care
+                // about the reported version string.
+                .define("WHISPER_VERSION", to: "\"1.9.1\""),
+                .define("PARAKEET_VERSION", to: "\"1.9.1\""),
                 .headerSearchPath("ggml/src"),
                 .headerSearchPath("ggml/include"),
                 .headerSearchPath("ggml/src/ggml-cpu")
