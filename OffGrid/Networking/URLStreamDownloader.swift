@@ -28,7 +28,7 @@ protocol MediaDownloading: Actor {
     func download(from remoteURL: URL) -> AsyncThrowingStream<DownloadState, Error>
 }
 
-actor URLStreamDownloader: NSObject, MediaDownloading {
+actor URLStreamDownloader: MediaDownloading {
 
     /// The single, restricted session used for all raw media fetches.
     /// Never reuse `URLSession.shared` elsewhere in the app — every
@@ -41,10 +41,26 @@ actor URLStreamDownloader: NSObject, MediaDownloading {
         config.httpCookieAcceptPolicy = .never
         config.urlCache = nil
         config.httpShouldSetCookies = false
-        return URLSession(configuration: config, delegate: self, delegateQueue: nil)
+        // A URLSession delegate MUST be an NSObject subclass. An `actor`
+        // cannot be one — actors do not support class inheritance — so the
+        // delegate role is delegated to a tiny private relay object that
+        // forwards every callback back into this actor's isolated state.
+        return URLSession(configuration: config, delegate: delegateRelay, delegateQueue: nil)
     }()
 
-    private var continuations: [URLSessionTask: AsyncThrowingStream<DownloadState, Error>.Continuation] = [:]
+    /// Owns the `URLSessionDownloadDelegate` conformance on the actor's
+    /// behalf. Held strongly here; it holds `self` only weakly, so there's
+    /// no retain cycle even though URLSession also retains it.
+    private let delegateRelay = SessionDelegateRelay()
+
+    /// Keyed by `URLSessionTask.taskIdentifier` (unique within one session)
+    /// so the nonisolated delegate callbacks can address the right stream
+    /// without passing a non-Sendable task across the isolation boundary.
+    private var continuations: [Int: AsyncThrowingStream<DownloadState, Error>.Continuation] = [:]
+
+    init() {
+        delegateRelay.owner = self
+    }
 
     func download(from remoteURL: URL) -> AsyncThrowingStream<DownloadState, Error> {
         AsyncThrowingStream { continuation in
@@ -53,51 +69,63 @@ actor URLStreamDownloader: NSObject, MediaDownloading {
                 return
             }
             let task = restrictedSession.downloadTask(with: remoteURL)
-            continuations[task] = continuation
+            continuations[task.taskIdentifier] = continuation
             continuation.yield(.idle)
             task.resume()
         }
     }
+
+    // Called by the delegate relay, hopped back onto the actor.
+    fileprivate func emit(_ state: DownloadState, forTaskID id: Int, finish: Bool = false) {
+        continuations[id]?.yield(state)
+        if finish {
+            continuations[id]?.finish()
+            continuations[id] = nil
+        }
+    }
+
+    fileprivate func fail(_ error: Error, forTaskID id: Int) {
+        continuations[id]?.finish(throwing: error)
+        continuations[id] = nil
+    }
 }
 
-extension URLStreamDownloader: URLSessionDownloadDelegate {
+/// URLSession requires its delegate to be an `NSObject` subclass, which an
+/// `actor` cannot be. This minimal relay holds the delegate role and hops
+/// each callback back onto the owning actor via `Task`.
+private final class SessionDelegateRelay: NSObject, URLSessionDownloadDelegate {
 
-    nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
-                                 didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
-                                 totalBytesExpectedToWrite: Int64) {
+    weak var owner: URLStreamDownloader?
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
+                    totalBytesExpectedToWrite: Int64) {
         let progress = totalBytesExpectedToWrite > 0
             ? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
             : 0
-        Task { await self.emit(.downloading(progress: progress), for: downloadTask) }
+        let id = downloadTask.taskIdentifier
+        Task { [owner] in await owner?.emit(.downloading(progress: progress), forTaskID: id) }
     }
 
-    nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
-                                 didFinishDownloadingTo location: URL) {
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didFinishDownloadingTo location: URL) {
+        // The temp URL handed in is only valid for the duration of this
+        // callback, so the move MUST happen synchronously here, before any
+        // `await` hop, or the system will reclaim the file first.
         let destination = FileManager.default.temporaryDirectory
             .appendingPathComponent("offgrid-fetch-\(UUID().uuidString)")
+        let id = downloadTask.taskIdentifier
         do {
             try FileManager.default.moveItem(at: location, to: destination)
-            Task { await self.emit(.finished(fileURL: destination), for: downloadTask, finish: true) }
+            Task { [owner] in await owner?.emit(.finished(fileURL: destination), forTaskID: id, finish: true) }
         } catch {
-            Task { await self.fail(error, for: downloadTask) }
+            Task { [owner] in await owner?.fail(error, forTaskID: id) }
         }
     }
 
-    nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let error else { return }
-        Task { await self.fail(error, for: task) }
-    }
-
-    private func emit(_ state: DownloadState, for task: URLSessionTask, finish: Bool = false) {
-        continuations[task]?.yield(state)
-        if finish {
-            continuations[task]?.finish()
-            continuations[task] = nil
-        }
-    }
-
-    private func fail(_ error: Error, for task: URLSessionTask) {
-        continuations[task]?.finish(throwing: error)
-        continuations[task] = nil
+        let id = task.taskIdentifier
+        Task { [owner] in await owner?.fail(error, forTaskID: id) }
     }
 }
