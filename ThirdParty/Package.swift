@@ -24,6 +24,7 @@ let package = Package(
                 "ggml/src/ggml-musa",
                 "ggml/src/ggml-cann",
                 "ggml/src/ggml-opencl",
+                "ggml/src/ggml-hexagon",
                 // CPU arch folders for other CPUs
                 "ggml/src/ggml-cpu/arch/x86",
                 "ggml/src/ggml-cpu/arch/powerpc",
@@ -82,6 +83,7 @@ let package = Package(
                 "ggml/src/ggml-musa",
                 "ggml/src/ggml-cann",
                 "ggml/src/ggml-opencl",
+                "ggml/src/ggml-hexagon",
                 // CPU arch folders for other CPUs
                 "ggml/src/ggml-cpu/arch/x86",
                 "ggml/src/ggml-cpu/arch/powerpc",
