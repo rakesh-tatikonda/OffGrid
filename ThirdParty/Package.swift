@@ -35,6 +35,12 @@ let package = Package(
                 "ggml/src/ggml-cpu/arch/s390",
                 "ggml/src/ggml-cpu/arch/loongarch",
                 "ggml/src/ggml-cpu/arch/wasm",
+                // KleidiAI is an opt-in ARM matmul backend (CMake:
+                // GGML_CPU_KLEIDIAI, off by default) whose kai_*.h headers are
+                // fetched from an external download not present in this tree.
+                // Its use in ggml-cpu.cpp is behind #ifdef GGML_USE_CPU_KLEIDIAI,
+                // which we do not define, so excluding it is safe.
+                "ggml/src/ggml-cpu/kleidiai",
                 // CoreML and OpenVINO are opt-in acceleration backends. The
                 // default CPU build does not compile them (CMake gates them
                 // behind WHISPER_COREML / WHISPER_OPENVINO). OpenVINO needs an
@@ -97,6 +103,12 @@ let package = Package(
                 "ggml/src/ggml-cpu/arch/s390",
                 "ggml/src/ggml-cpu/arch/loongarch",
                 "ggml/src/ggml-cpu/arch/wasm",
+                // KleidiAI is an opt-in ARM matmul backend (CMake:
+                // GGML_CPU_KLEIDIAI, off by default) whose kai_*.h headers are
+                // fetched from an external download not present in this tree.
+                // Its use in ggml-cpu.cpp is behind #ifdef GGML_USE_CPU_KLEIDIAI,
+                // which we do not define, so excluding it is safe.
+                "ggml/src/ggml-cpu/kleidiai",
                 // Ignore test files, examples, and CLI tools
                 "tests",
                 "examples",
