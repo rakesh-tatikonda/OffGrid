@@ -43,11 +43,10 @@ let package = Package(
                 "models",
                 "scripts",
                 "CMakeLists.txt",
-                "Makefile",
-                // Exclude CLI application sources containing main() to prevent SwiftPM from treating this as an executable
-                "src/main.cpp",
-                "src/whisper-cli.cpp",
-                "src/stream.cpp"
+                "Makefile"
+                // NOTE: whisper.cpp's CLI/stream sources with main() live under
+                // examples/ (already excluded above), not src/, so no per-file
+                // exclusions are needed here.
             ],
             sources: [
                 "ggml/src",
@@ -102,11 +101,10 @@ let package = Package(
                 "pocs",
                 "scripts",
                 "CMakeLists.txt",
-                "Makefile",
-                // Exclude CLI application sources containing main() to prevent SwiftPM from treating this as an executable
-                "src/main.cpp",
-                "src/llama-cli.cpp",
-                "src/llama-server.cpp"
+                "Makefile"
+                // NOTE: llama.cpp's CLI/server sources with main() live under
+                // tools/ and examples/ (outside the scanned src/ path), so no
+                // per-file exclusions are needed here.
             ],
             sources: [
                 "ggml/src",
