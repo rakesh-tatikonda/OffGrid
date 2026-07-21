@@ -1,52 +1,89 @@
-name: iOS Build Check
+name: iOS Build and Export
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  workflow_dispatch: {}
+    branches: [ "main" ]
+  workflow_dispatch: # This allows you to click a button in GitHub to run it manually
 
 jobs:
   build:
-    runs-on: macos-15
+    name: Build and Sign IPA
+    runs-on: macos-latest
 
     steps:
-      - name: Checkout (with submodules)
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Fix ThirdParty submodules (strip main.swift / nested Package.swift)
-        run: ./scripts/fix-thirdparty-submodules.sh
-
-      - name: Wake Up Headless iOS Simulator Daemon
-        # Warms up the background process to avoid the "Unable to connect to simulator" bug.
-        run: |
-          xcrun simctl list > /dev/null
-          sleep 5
 
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Generate Xcode project from project.yml
+      - name: Generate Xcode Project
         run: xcodegen generate
 
-      - name: List schemes (sanity check)
-        run: xcodebuild -list -project OffGrid.xcodeproj
-
-      - name: Build for iOS Simulator
+      - name: Install Apple Certificate and Provisioning Profile
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}
         run: |
-          xcodebuild build \
-            -project OffGrid.xcodeproj \
-            -scheme OffGrid \
-            -sdk iphonesimulator \
-            -destination "platform=iOS Simulator,name=iPhone 16" \
-            ARCHS=arm64 \
-            ONLY_ACTIVE_ARCH=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            COMPILER_INDEX_STORE_ENABLE=NO \
-            GCC_TREAT_WARNINGS_AS_ERRORS=NO \
-            SWIFT_TREAT_WARNINGS_AS_ERRORS=NO \
-            GCC_PREPROCESSOR_DEFINITIONS='$(inherited) GGML_NO_ACCELERATE=1 GGML_USE_CPU=1' \
-            OTHER_SWIFT_FLAGS="-Xfrontend -serialize-debugging-options"
+          # Create variables
+          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
+          PP_PATH=$RUNNER_TEMP/build_pp.mobileprovision
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+
+          # Import certificate and provisioning profile from secrets
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o $CERTIFICATE_PATH
+          echo -n "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode -o $PP_PATH
+
+          # Create temporary keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          # Import certificate to keychain
+          security import $CERTIFICATE_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          # Apply provisioning profile
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles
+
+      - name: Generate ExportOptions.plist
+        run: |
+          cat <<EOF > ExportOptions.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>app-store</string>
+              <key>compileBitcode</key>
+              <false/>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Build and Archive App
+        run: |
+          xcodebuild archive \
+            -project CapSure.xcodeproj \
+            -scheme CapSure \
+            -sdk iphoneos \
+            -configuration Release \
+            -archivePath $PWD/build/CapSure.xcarchive \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGNING_REQUIRED=YES
+            
+      - name: Export IPA
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath $PWD/build/CapSure.xcarchive \
+            -exportOptionsPlist ExportOptions.plist \
+            -exportPath $PWD/build/export
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CapSure-IPA
+          path: build/export/*.ipa
