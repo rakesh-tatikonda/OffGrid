@@ -52,4 +52,8 @@ echo "Removing CMake scripts..."
 find ThirdParty/whisper.cpp -name "CMakeLists.txt" -type f -delete
 find ThirdParty/llama.cpp -name "CMakeLists.txt" -type f -delete
 
+# 5. Clean up external accelerator integrations inside the src/ folder
+echo "Removing Intel OpenVINO integrations..."
+rm -rf "ThirdParty/whisper.cpp/src/openvino"
+
 echo "ThirdParty submodule fixes applied successfully!"
