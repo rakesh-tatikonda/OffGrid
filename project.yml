@@ -27,8 +27,7 @@ targets:
       - path: OffGrid
         excludes:
           - "Resources/Info.plist.excerpt.xml"   # folded into generated Info.plist below, not compiled
-
-    settings:
+settings:
       base:
         SWIFT_OBJC_BRIDGING_HEADER: OffGrid/OffGrid-Bridging-Header.h
         PRODUCT_BUNDLE_IDENTIFIER: com.yourname.offgrid
@@ -37,11 +36,12 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         ENABLE_BITCODE: NO
         CLANG_CXX_LANGUAGE_STANDARD: "c++17"
-        
-        # Add these lines to fix the ggml.h file not found error:
         HEADER_SEARCH_PATHS:
           - "$(SRCROOT)/ThirdParty/whisper.cpp/ggml/include"
           - "$(SRCROOT)/ThirdParty/llama.cpp/ggml/include"
+        # Add this line:
+        OTHER_LDFLAGS: ["-lc++"]
+
 
     # Generates the real Info.plist from these keys directly — encodes the
     # same "no background modes, no ATS exceptions" intent as the excerpt
