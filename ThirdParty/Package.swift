@@ -129,13 +129,18 @@ let package = Package(
                 .define("GGML_USE_CPU", to: "1"),
                 .headerSearchPath("ggml/src"),
                 .headerSearchPath("ggml/include"),
-                .headerSearchPath("ggml/src/ggml-cpu")
+                .headerSearchPath("ggml/src/ggml-cpu"),
+                // Model impls live in src/models/ and include headers from the
+                // parent src/ (e.g. "llama-model.h"). A quote-include only sees
+                // the file's own dir by default, so src/ must be on the path.
+                .headerSearchPath("src")
             ],
             cxxSettings: [
                 .define("GGML_USE_CPU", to: "1"),
                 .headerSearchPath("ggml/src"),
                 .headerSearchPath("ggml/include"),
-                .headerSearchPath("ggml/src/ggml-cpu")
+                .headerSearchPath("ggml/src/ggml-cpu"),
+                .headerSearchPath("src")
             ]
         )
     ],
