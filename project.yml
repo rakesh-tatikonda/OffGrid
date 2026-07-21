@@ -11,7 +11,7 @@ packages:
     path: ThirdParty   # the local Package.swift wrapping whisper.cpp/llama.cpp
 
 targets:
-  OffGrid:
+  CapSure:
     type: application
     platform: iOS
 
