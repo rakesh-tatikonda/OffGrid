@@ -1,4 +1,4 @@
-name: CapSure Distribution
+name: CapSure
 
 options:
   bundleIdPrefix: com.Fortress.CapSure
@@ -11,7 +11,7 @@ packages:
     path: ThirdParty   # the local Package.swift wrapping whisper.cpp/llama.cpp
 
 targets:
-  CapSure Distribution:
+  CapSure:
     type: application
     platform: iOS
 
@@ -48,7 +48,7 @@ targets:
     info:
       path: OffGrid/Resources/Info.plist
       properties:
-        CFBundleDisplayName: "CapSure Distribution"
+        CFBundleDisplayName: "CapSure"
         ITSAppUsesNonExemptEncryption: false
         UIFileSharingEnabled: false
         LSSupportsOpeningDocumentsInPlace: false
