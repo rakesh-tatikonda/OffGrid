@@ -6,7 +6,7 @@ let package = Package(
     platforms: [
         .iOS(.v17)
     ],
-   products: [
+    products: [
         .library(name: "WhisperEngine", type: .dynamic, targets: ["WhisperEngine"]),
         .library(name: "LlamaEngine", type: .dynamic, targets: ["LlamaEngine"])
     ],
@@ -20,41 +20,32 @@ let package = Package(
                 "ggml/src/ggml-cuda",
                 "ggml/src/ggml-sycl",
                 "ggml/src/ggml-vulkan",
-                "ggml/src/ggml-kompute",
                 "ggml/src/ggml-rpc",
                 "ggml/src/ggml-musa",
                 "ggml/src/ggml-cann",
                 "ggml/src/ggml-opencl",
-                // CPU arch folders for other CPUs. SwiftPM compiles every file
-                // under `sources`, but only the arm64 folder is valid for this
-                // target. CMake selects a single arch dir; we replicate that by
-                // excluding all non-ARM ones (leaving ggml-cpu/arch/arm).
+                // CPU arch folders for other CPUs
                 "ggml/src/ggml-cpu/arch/x86",
                 "ggml/src/ggml-cpu/arch/powerpc",
                 "ggml/src/ggml-cpu/arch/riscv",
                 "ggml/src/ggml-cpu/arch/s390",
                 "ggml/src/ggml-cpu/arch/loongarch",
                 "ggml/src/ggml-cpu/arch/wasm",
-                // KleidiAI is an opt-in ARM matmul backend (CMake:
-                // GGML_CPU_KLEIDIAI, off by default) whose kai_*.h headers are
-                // fetched from an external download not present in this tree.
-                // Its use in ggml-cpu.cpp is behind #ifdef GGML_USE_CPU_KLEIDIAI,
-                // which we do not define, so excluding it is safe.
+                // KleidiAI backend
                 "ggml/src/ggml-cpu/kleidiai",
-                // CoreML and OpenVINO are opt-in acceleration backends. The
-                // default CPU build does not compile them (CMake gates them
-                // behind WHISPER_COREML / WHISPER_OPENVINO). OpenVINO needs an
-                // SDK that isn't present; CoreML needs the -DWHISPER_USE_COREML
-                // path wired up. Exclude both so only the CPU path is built.
+                // CoreML and OpenVINO acceleration backends
                 "src/coreml",
                 "src/openvino",
-                // Ignore test files, examples, and CLI tools
+                // Ignore test files, examples, and CLI tools (only excluding folders that actually exist)
                 "tests",
                 "examples",
-                "bindings",
                 "extra",
                 "models",
-                "scripts"
+                "scripts",
+                // Exclude the CLI main file entry points so SwiftPM doesn't treat it as an executable
+                "src/main.cpp",
+                "src/whisper-cli.cpp",
+                "common"
             ],
             sources: [
                 "ggml/src",
@@ -70,10 +61,6 @@ let package = Package(
             ],
             cxxSettings: [
                 .define("GGML_USE_CPU", to: "1"),
-                // Normally injected by CMake (project VERSION). whisper.cpp and
-                // parakeet.cpp return these directly, so they must be defined.
-                // Set to match the pinned whisper.cpp submodule if you care
-                // about the reported version string.
                 .define("WHISPER_VERSION", to: "\"1.9.0\""),
                 .define("PARAKEET_VERSION", to: "\"1.9.0\""),
                 .headerSearchPath("ggml/src"),
@@ -90,35 +77,31 @@ let package = Package(
                 "ggml/src/ggml-cuda",
                 "ggml/src/ggml-sycl",
                 "ggml/src/ggml-vulkan",
-                "ggml/src/ggml-kompute",
                 "ggml/src/ggml-rpc",
                 "ggml/src/ggml-musa",
                 "ggml/src/ggml-cann",
                 "ggml/src/ggml-opencl",
-                // CPU arch folders for other CPUs (see WhisperEngine note).
-                // Keep only ggml-cpu/arch/arm for the arm64 target.
+                // CPU arch folders for other CPUs
                 "ggml/src/ggml-cpu/arch/x86",
                 "ggml/src/ggml-cpu/arch/powerpc",
                 "ggml/src/ggml-cpu/arch/riscv",
                 "ggml/src/ggml-cpu/arch/s390",
                 "ggml/src/ggml-cpu/arch/loongarch",
                 "ggml/src/ggml-cpu/arch/wasm",
-                // KleidiAI is an opt-in ARM matmul backend (CMake:
-                // GGML_CPU_KLEIDIAI, off by default) whose kai_*.h headers are
-                // fetched from an external download not present in this tree.
-                // Its use in ggml-cpu.cpp is behind #ifdef GGML_USE_CPU_KLEIDIAI,
-                // which we do not define, so excluding it is safe.
+                // KleidiAI backend
                 "ggml/src/ggml-cpu/kleidiai",
-                // Ignore test files, examples, and CLI tools
+                // Ignore test files, examples, and CLI tools (only excluding folders that actually exist)
                 "tests",
                 "examples",
-                "bindings",
                 "docs",
                 "media",
                 "models",
                 "pocs",
-                "prompts",
-                "scripts"
+                "scripts",
+                // Exclude the CLI main file entry points so SwiftPM doesn't treat it as an executable
+                "src/llama-cli.cpp",
+                "src/main.cpp",
+                "common"
             ],
             sources: [
                 "ggml/src",
@@ -130,9 +113,6 @@ let package = Package(
                 .headerSearchPath("ggml/src"),
                 .headerSearchPath("ggml/include"),
                 .headerSearchPath("ggml/src/ggml-cpu"),
-                // Model impls live in src/models/ and include headers from the
-                // parent src/ (e.g. "llama-model.h"). A quote-include only sees
-                // the file's own dir by default, so src/ must be on the path.
                 .headerSearchPath("src")
             ],
             cxxSettings: [
