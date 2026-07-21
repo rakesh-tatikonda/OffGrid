@@ -6,9 +6,9 @@ let package = Package(
     platforms: [
         .iOS(.v17)
     ],
-    products: [
-        .library(name: "WhisperEngine", targets: ["WhisperEngine"]),
-        .library(name: "LlamaEngine", targets: ["LlamaEngine"])
+   products: [
+        .library(name: "WhisperEngine", type: .dynamic, targets: ["WhisperEngine"]),
+        .library(name: "LlamaEngine", type: .dynamic, targets: ["LlamaEngine"])
     ],
     targets: [
         .target(
