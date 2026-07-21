@@ -25,6 +25,10 @@ let package = Package(
                 "ggml/src/ggml-cann",
                 "ggml/src/ggml-opencl",
                 "ggml/src/ggml-hexagon",
+                // Metal GPU backend: excluded for this CPU-only build. Its .metal
+                // shaders compile to default.metallib, which collides with the
+                // LlamaEngine copy when both frameworks are embedded in one app.
+                "ggml/src/ggml-metal",
                 // CPU arch folders for other CPUs
                 "ggml/src/ggml-cpu/arch/x86",
                 "ggml/src/ggml-cpu/arch/powerpc",
@@ -83,6 +87,10 @@ let package = Package(
                 "ggml/src/ggml-cann",
                 "ggml/src/ggml-opencl",
                 "ggml/src/ggml-hexagon",
+                // Metal GPU backend: excluded for this CPU-only build. Its .metal
+                // shaders compile to default.metallib, which collides with the
+                // WhisperEngine copy when both frameworks are embedded in one app.
+                "ggml/src/ggml-metal",
                 // CPU arch folders for other CPUs
                 "ggml/src/ggml-cpu/arch/x86",
                 "ggml/src/ggml-cpu/arch/powerpc",
