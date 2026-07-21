@@ -25,6 +25,16 @@ let package = Package(
                 "ggml/src/ggml-musa",
                 "ggml/src/ggml-cann",
                 "ggml/src/ggml-opencl",
+                // CPU arch folders for other CPUs. SwiftPM compiles every file
+                // under `sources`, but only the arm64 folder is valid for this
+                // target. CMake selects a single arch dir; we replicate that by
+                // excluding all non-ARM ones (leaving ggml-cpu/arch/arm).
+                "ggml/src/ggml-cpu/arch/x86",
+                "ggml/src/ggml-cpu/arch/powerpc",
+                "ggml/src/ggml-cpu/arch/riscv",
+                "ggml/src/ggml-cpu/arch/s390",
+                "ggml/src/ggml-cpu/arch/loongarch",
+                "ggml/src/ggml-cpu/arch/wasm",
                 // Ignore test files, examples, and CLI tools
                 "tests",
                 "examples",
@@ -66,6 +76,14 @@ let package = Package(
                 "ggml/src/ggml-musa",
                 "ggml/src/ggml-cann",
                 "ggml/src/ggml-opencl",
+                // CPU arch folders for other CPUs (see WhisperEngine note).
+                // Keep only ggml-cpu/arch/arm for the arm64 target.
+                "ggml/src/ggml-cpu/arch/x86",
+                "ggml/src/ggml-cpu/arch/powerpc",
+                "ggml/src/ggml-cpu/arch/riscv",
+                "ggml/src/ggml-cpu/arch/s390",
+                "ggml/src/ggml-cpu/arch/loongarch",
+                "ggml/src/ggml-cpu/arch/wasm",
                 // Ignore test files, examples, and CLI tools
                 "tests",
                 "examples",
