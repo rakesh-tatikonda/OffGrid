@@ -1,11 +1,3 @@
-# Save as: project.yml in your repo root (same level as the OffGrid/ folder
-# and ThirdParty/). This is NOT the Xcode project itself — it's a spec that
-# XcodeGen reads to *generate* OffGrid.xcodeproj. You never hand-edit the
-# generated .xcodeproj; you edit this file and regenerate.
-#
-# CHANGE BEFORE FIRST BUILD:
-#   bundleIdPrefix below — pick your own reverse-DNS id, e.g. com.yourname
-
 name: OffGrid
 
 options:
@@ -27,7 +19,8 @@ targets:
       - path: OffGrid
         excludes:
           - "Resources/Info.plist.excerpt.xml"   # folded into generated Info.plist below, not compiled
-settings:
+
+    settings:
       base:
         SWIFT_OBJC_BRIDGING_HEADER: OffGrid/OffGrid-Bridging-Header.h
         PRODUCT_BUNDLE_IDENTIFIER: com.yourname.offgrid
@@ -39,13 +32,11 @@ settings:
         HEADER_SEARCH_PATHS:
           - "$(SRCROOT)/ThirdParty/whisper.cpp/ggml/include"
           - "$(SRCROOT)/ThirdParty/llama.cpp/ggml/include"
-        # Add this line:
         OTHER_LDFLAGS: ["-lc++"]
-
 
     # Generates the real Info.plist from these keys directly — encodes the
     # same "no background modes, no ATS exceptions" intent as the excerpt
-    # file, so there's nothing left to hand-merge
+    # file, so there's nothing left to hand-merge.
     info:
       path: OffGrid/Resources/Info.plist
       properties:
