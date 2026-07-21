@@ -91,18 +91,18 @@ jobs:
       - name: Build and Archive App
         run: |
           xcodebuild archive \
-            -project CapSure Distribution.xcodeproj \
-            -scheme CapSure Distribution \
+            -project CapSure.xcodeproj \
+            -scheme CapSure \
             -sdk iphoneos \
             -configuration Release \
-            -archivePath $PWD/build/CapSure Distribution.xcarchive \
+            -archivePath $PWD/build/CapSure.xcarchive \
             CODE_SIGNING_ALLOWED=YES \
             CODE_SIGNING_REQUIRED=YES
             
       - name: Export IPA
         run: |
           xcodebuild -exportArchive \
-            -archivePath $PWD/build/CapSure Distribution.xcarchive \
+            -archivePath $PWD/build/CapSure.xcarchive \
             -exportOptionsPlist ExportOptions.plist \
             -exportPath $PWD/build/export
 
