@@ -56,4 +56,26 @@ find ThirdParty/llama.cpp -name "CMakeLists.txt" -type f -delete
 echo "Removing Intel OpenVINO integrations..."
 rm -rf "ThirdParty/whisper.cpp/src/openvino"
 
+# 6. Fix missing GGML version macros 
+# Injects the missing definitions at the top of ggml.c so clang doesn't crash
+echo "Patching missing GGML_VERSION and GGML_COMMIT macros..."
+patch_ggml_c() {
+    local file=$1
+    if [ -f "$file" ]; then
+        echo '#ifndef GGML_VERSION' > temp_ggml.c
+        echo '#define GGML_VERSION "unknown"' >> temp_ggml.c
+        echo '#endif' >> temp_ggml.c
+        echo '#ifndef GGML_COMMIT' >> temp_ggml.c
+        echo '#define GGML_COMMIT "unknown"' >> temp_ggml.c
+        echo '#endif' >> temp_ggml.c
+        
+        cat "$file" >> temp_ggml.c
+        mv temp_ggml.c "$file"
+        echo "Patched $file"
+    fi
+}
+
+patch_ggml_c "ThirdParty/whisper.cpp/ggml/src/ggml.c"
+patch_ggml_c "ThirdParty/llama.cpp/ggml/src/ggml.c"
+
 echo "ThirdParty submodule fixes applied successfully!"
