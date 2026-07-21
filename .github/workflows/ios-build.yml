@@ -50,6 +50,16 @@ jobs:
           security import $CERTIFICATE_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
 
+          # Add the keychain to the search list so xcodebuild can actually find
+          # the imported identity (without this, signing fails with
+          # "No signing certificate found" even though the cert is imported).
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
+          # Diagnostic: list valid codesigning identities. If this prints
+          # "0 valid identities found", the .p12 is missing its private key
+          # (regenerate it with `openssl pkcs12 -export -legacy ...`).
+          security find-identity -v -p codesigning $KEYCHAIN_PATH
+
           # Apply provisioning profile
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles
