@@ -3,7 +3,7 @@ name: iOS Build and Export
 on:
   push:
     branches: [ "main" ]
-  workflow_dispatch: # This allows you to click a button in GitHub to run it manually
+  workflow_dispatch: # This allows you to click a button in GitHub to run it manually.
 
 jobs:
   build:
