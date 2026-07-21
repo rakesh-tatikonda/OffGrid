@@ -36,16 +36,13 @@ let package = Package(
                 // CoreML and OpenVINO acceleration backends
                 "src/coreml",
                 "src/openvino",
-                // Ignore test files, examples, and CLI tools (only excluding folders that actually exist)
+                // Ignore non-source folders/files
                 "tests",
                 "examples",
-                "extra",
                 "models",
                 "scripts",
-                // Exclude the CLI main file entry points so SwiftPM doesn't treat it as an executable
-                "src/main.cpp",
-                "src/whisper-cli.cpp",
-                "common"
+                "CMakeLists.txt",
+                "Makefile"
             ],
             sources: [
                 "ggml/src",
@@ -90,7 +87,7 @@ let package = Package(
                 "ggml/src/ggml-cpu/arch/wasm",
                 // KleidiAI backend
                 "ggml/src/ggml-cpu/kleidiai",
-                // Ignore test files, examples, and CLI tools (only excluding folders that actually exist)
+                // Ignore non-source folders/files
                 "tests",
                 "examples",
                 "docs",
@@ -98,10 +95,8 @@ let package = Package(
                 "models",
                 "pocs",
                 "scripts",
-                // Exclude the CLI main file entry points so SwiftPM doesn't treat it as an executable
-                "src/llama-cli.cpp",
-                "src/main.cpp",
-                "common"
+                "CMakeLists.txt",
+                "Makefile"
             ],
             sources: [
                 "ggml/src",
