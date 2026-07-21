@@ -78,11 +78,9 @@ struct FileImporterButton: View {
             allowsMultipleSelection: false
         ) { result in
             do {
-                let singleResult = try result.map { urls in
-                    guard let first = urls.first else { throw FileImportError.accessDenied }
-                    return first
-                }
-                let media = try coordinator.importFile(from: singleResult)
+                let urls = try result.get()
+                guard let first = urls.first else { throw FileImportError.accessDenied }
+                let media = try coordinator.importFile(from: .success(first))
                 onImported(media)
             } catch let error as FileImportError {
                 coordinator.lastError = error
