@@ -50,10 +50,6 @@ final class StoreManager {
         }
     }
 
-    deinit {
-        transactionListenerTask?.cancel()
-    }
-
     // MARK: - Product catalog (local StoreKit config or App Store Connect)
 
     private func loadProduct() async {
