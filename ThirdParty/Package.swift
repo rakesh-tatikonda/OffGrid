@@ -15,20 +15,31 @@ let package = Package(
             name: "WhisperEngine",
             path: "whisper.cpp",
             exclude: [
-                // Unsupported hardware backends for iOS
-                "ggml/src/ggml-cpu/spacemit",
-                "ggml/src/ggml-cuda",
-                "ggml/src/ggml-sycl",
-                "ggml/src/ggml-vulkan",
-                "ggml/src/ggml-rpc",
-                "ggml/src/ggml-musa",
+                // Non-CPU ggml backends. This is a CPU-only iOS build
+                // (GGML_USE_CPU=1); ggml-cpu is the only backend we keep. The
+                // rest are GPU/accelerator backends, remote/virtual backends
+                // that need Linux-only headers (e.g. ggml-virtgpu pulls in
+                // sys/sysmacros.h & clock_nanosleep), or backends that emit a
+                // conflicting artifact (ggml-metal -> default.metallib). Upstream
+                // keeps adding these, so we exclude the whole set explicitly.
+                "ggml/src/ggml-blas",
                 "ggml/src/ggml-cann",
-                "ggml/src/ggml-opencl",
+                "ggml/src/ggml-cuda",
                 "ggml/src/ggml-hexagon",
-                // Metal GPU backend: excluded for this CPU-only build. Its .metal
-                // shaders compile to default.metallib, which collides with the
-                // LlamaEngine copy when both frameworks are embedded in one app.
+                "ggml/src/ggml-hip",
                 "ggml/src/ggml-metal",
+                "ggml/src/ggml-musa",
+                "ggml/src/ggml-opencl",
+                "ggml/src/ggml-openvino",
+                "ggml/src/ggml-rpc",
+                "ggml/src/ggml-sycl",
+                "ggml/src/ggml-virtgpu",
+                "ggml/src/ggml-vulkan",
+                "ggml/src/ggml-webgpu",
+                "ggml/src/ggml-zdnn",
+                "ggml/src/ggml-zendnn",
+                // Non-Apple CPU sub-backend under ggml-cpu
+                "ggml/src/ggml-cpu/spacemit",
                 // CPU arch folders for other CPUs
                 "ggml/src/ggml-cpu/arch/x86",
                 "ggml/src/ggml-cpu/arch/powerpc",
@@ -77,20 +88,32 @@ let package = Package(
             name: "LlamaEngine",
             path: "llama.cpp",
             exclude: [
-                // Unsupported hardware backends for iOS
-                "ggml/src/ggml-cpu/spacemit",
-                "ggml/src/ggml-cuda",
-                "ggml/src/ggml-sycl",
-                "ggml/src/ggml-vulkan",
-                "ggml/src/ggml-rpc",
-                "ggml/src/ggml-musa",
+                // Non-CPU ggml backends. This is a CPU-only iOS build
+                // (GGML_USE_CPU=1); ggml-cpu is the only backend we keep. The
+                // rest are GPU/accelerator backends, remote/virtual backends
+                // that need Linux-only headers (e.g. ggml-virtgpu pulls in
+                // sys/sysmacros.h & clock_nanosleep), or backends that emit a
+                // conflicting artifact (ggml-metal -> default.metallib). Upstream
+                // keeps adding these, so we exclude the whole set explicitly.
+                "ggml/src/ggml-blas",
                 "ggml/src/ggml-cann",
-                "ggml/src/ggml-opencl",
+                "ggml/src/ggml-cuda",
+                "ggml/src/ggml-et",
                 "ggml/src/ggml-hexagon",
-                // Metal GPU backend: excluded for this CPU-only build. Its .metal
-                // shaders compile to default.metallib, which collides with the
-                // WhisperEngine copy when both frameworks are embedded in one app.
+                "ggml/src/ggml-hip",
                 "ggml/src/ggml-metal",
+                "ggml/src/ggml-musa",
+                "ggml/src/ggml-opencl",
+                "ggml/src/ggml-openvino",
+                "ggml/src/ggml-rpc",
+                "ggml/src/ggml-sycl",
+                "ggml/src/ggml-virtgpu",
+                "ggml/src/ggml-vulkan",
+                "ggml/src/ggml-webgpu",
+                "ggml/src/ggml-zdnn",
+                "ggml/src/ggml-zendnn",
+                // Non-Apple CPU sub-backend under ggml-cpu
+                "ggml/src/ggml-cpu/spacemit",
                 // CPU arch folders for other CPUs
                 "ggml/src/ggml-cpu/arch/x86",
                 "ggml/src/ggml-cpu/arch/powerpc",
