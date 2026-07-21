@@ -45,7 +45,7 @@ settings:
 
     # Generates the real Info.plist from these keys directly — encodes the
     # same "no background modes, no ATS exceptions" intent as the excerpt
-    # file, so there's nothing left to hand-merge.
+    # file, so there's nothing left to hand-merge
     info:
       path: OffGrid/Resources/Info.plist
       properties:
