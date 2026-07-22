@@ -1,7 +1,7 @@
-name: CapSure
+name: CapSureTranscribe
 
 options:
-  bundleIdPrefix: com.Fortress.CapSure
+  bundleIdPrefix: com.Fortress.CapSureTranscribe
   deploymentTarget:
     iOS: "17.0"
   createIntermediateGroups: true
@@ -11,7 +11,7 @@ packages:
     path: ThirdParty   # the local Package.swift wrapping whisper.cpp/llama.cpp
 
 targets:
-  CapSure:
+  CapSureTranscribe:
     type: application
     platform: iOS
 
@@ -23,7 +23,7 @@ targets:
     settings:
       base:
         SWIFT_OBJC_BRIDGING_HEADER: OffGrid/OffGrid-Bridging-Header.h
-        PRODUCT_BUNDLE_IDENTIFIER: com.Fortress.CapSure
+        PRODUCT_BUNDLE_IDENTIFIER: com.Fortress.CapSureTranscribe
         SWIFT_VERSION: "5.10"
         MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
@@ -48,7 +48,7 @@ targets:
     info:
       path: OffGrid/Resources/Info.plist
       properties:
-        CFBundleDisplayName: "CapSure"
+        CFBundleDisplayName: "CapSureTranscribe"
         ITSAppUsesNonExemptEncryption: false
         UIFileSharingEnabled: false
         LSSupportsOpeningDocumentsInPlace: false
