@@ -32,6 +32,37 @@ jobs:
             fi
           done
 
+      - name: Preflight - verify secrets are reaching this job
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          PROVISIONING_PROFILE_NAME: ${{ secrets.PROVISIONING_PROFILE_NAME }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
+        run: |
+          # Prints only character counts, never values. A length of 0 means the
+          # secret is not reaching this job - most often because it is an
+          # *environment* secret and the job has no `environment:` key, or it
+          # was created under the Variables tab instead of Secrets.
+          fail=0
+          for name in APPLE_TEAM_ID PROVISIONING_PROFILE_NAME P12_PASSWORD \
+                      BUILD_CERTIFICATE_BASE64 BUILD_PROVISION_PROFILE_BASE64; do
+            eval "val=\${$name}"
+            printf '%-32s length=%s\n' "$name" "${#val}"
+            if [ -z "$val" ]; then fail=1; fi
+          done
+
+          # Team IDs are 10 alphanumeric characters. A different length here
+          # usually means a whole Apple Developer account name got pasted in.
+          if [ "${#APPLE_TEAM_ID}" -ne 10 ] && [ -n "$APPLE_TEAM_ID" ]; then
+            echo "::warning::APPLE_TEAM_ID is ${#APPLE_TEAM_ID} chars; Apple team IDs are normally 10"
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::One or more secrets arrived empty. If they are Environment secrets, add an 'environment:' key to this job."
+            exit 1
+          fi
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
@@ -91,19 +122,27 @@ jobs:
             exit 1
           fi
 
-          # Xcode 16+ reads profiles from this directory
+          # Decode the profile ONCE to a real file. PlistBuddy reading from
+          # /dev/stdin is unreliable - it sometimes reports "file does not
+          # exist" because it seeks the input.
+          security cms -D -i $PP_PATH > $RUNNER_TEMP/pp.plist
+          UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" $RUNNER_TEMP/pp.plist)
+          if [ -z "$UUID" ]; then
+            echo "::error::Could not read UUID from provisioning profile. BUILD_PROVISION_PROFILE_BASE64 may be truncated or not a .mobileprovision."
+            exit 1
+          fi
+
+          # Xcode 16+ reads from UserData; older paths kept for safety
           mkdir -p ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" \
-            /dev/stdin <<< "$(security cms -D -i $PP_PATH)")
           cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
           cp $PP_PATH ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/$UUID.mobileprovision
 
-          # Print the profile's name + app ID so you can confirm they match
-          # PROVISIONING_PROFILE_NAME and BUNDLE_ID
-          security cms -D -i $PP_PATH > $RUNNER_TEMP/pp.plist
+          # Confirm these match PROVISIONING_PROFILE_NAME and BUNDLE_ID
+          echo "--- provisioning profile ---"
           /usr/libexec/PlistBuddy -c "Print :Name" $RUNNER_TEMP/pp.plist
           /usr/libexec/PlistBuddy -c "Print :Entitlements:application-identifier" $RUNNER_TEMP/pp.plist
+          /usr/libexec/PlistBuddy -c "Print :ExpirationDate" $RUNNER_TEMP/pp.plist
 
       - name: Generate ExportOptions.plist
         run: |
