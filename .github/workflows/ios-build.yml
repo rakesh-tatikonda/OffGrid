@@ -64,14 +64,32 @@ jobs:
           security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
 
-          security import $CERTIFICATE_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 \
+          # Inspect the .p12 BEFORE importing. A valid signing .p12 must
+          # contain both a certificate AND a private key. If "PRIVATE KEY"
+          # count is 0, the export was cert-only - that is the whole bug.
+          echo "--- p12 contents ---"
+          openssl pkcs12 -in $CERTIFICATE_PATH -passin pass:"$P12_PASSWORD" -nokeys -passout pass:x 2>/dev/null \
+            | grep -c "BEGIN CERTIFICATE" | sed 's/^/certificates: /'
+          openssl pkcs12 -in $CERTIFICATE_PATH -passin pass:"$P12_PASSWORD" -nocerts -passout pass:x 2>/dev/null \
+            | grep -c "PRIVATE KEY" | sed 's/^/private keys: /'
+          echo "--- certificate subject ---"
+          openssl pkcs12 -in $CERTIFICATE_PATH -passin pass:"$P12_PASSWORD" -nokeys -clcerts 2>/dev/null \
+            | openssl x509 -noout -subject -dates 2>/dev/null || echo "could not parse certificate"
+
+          # Note: no -t flag. Restricting to -t cert can skip the private key
+          # on some .p12 files; letting security infer the type imports both.
+          security import $CERTIFICATE_PATH -P "$P12_PASSWORD" -A -f pkcs12 \
             -k $KEYCHAIN_PATH -T /usr/bin/codesign -T /usr/bin/security
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
           security list-keychain -d user -s $KEYCHAIN_PATH
 
-          # If this prints "0 valid identities found", the .p12 has no private
-          # key - regenerate with `openssl pkcs12 -export -legacy ...`
+          echo "--- codesigning identities in keychain ---"
           security find-identity -v -p codesigning $KEYCHAIN_PATH
+          # Fail here rather than 10 minutes later inside xcodebuild
+          if security find-identity -v -p codesigning $KEYCHAIN_PATH | grep -q "0 valid identities found"; then
+            echo "::error::No usable signing identity. The .p12 is missing its private key, or was exported with an OpenSSL 3 cipher macOS cannot read. Re-export with: openssl pkcs12 -export -legacy -inkey key.pem -in cert.pem -out cert.p12"
+            exit 1
+          fi
 
           # Xcode 16+ reads profiles from this directory
           mkdir -p ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles
@@ -111,6 +129,17 @@ jobs:
           </plist>
           EOF
           cat ExportOptions.plist
+
+      - name: Show resolved signing settings
+        run: |
+          # Confirms what CODE_SIGN_IDENTITY / DEVELOPMENT_TEAM the project
+          # actually resolved to, vs what the certificate provides.
+          xcodebuild -showBuildSettings \
+            -project "${APP_NAME}.xcodeproj" \
+            -scheme "${APP_NAME}" \
+            -configuration Release 2>/dev/null \
+            | grep -E "CODE_SIGN_IDENTITY|CODE_SIGN_STYLE|DEVELOPMENT_TEAM|PROVISIONING_PROFILE|PRODUCT_BUNDLE_IDENTIFIER" \
+            | sort -u
 
       - name: Build and Archive App
         run: |
