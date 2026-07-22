@@ -3,7 +3,12 @@ name: iOS Build and Export
 on:
   push:
     branches: [ "main" ]
-  workflow_dispatch: # This allows you to click a button in GitHub to run it manually.
+  workflow_dispatch:
+
+env:
+  # Single source of truth. Must match `name:` and the target name in project.yml
+  APP_NAME: CapSureTranscribe
+  BUNDLE_ID: com.Fortress.CapSureTranscribe
 
 jobs:
   build:
@@ -14,7 +19,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          submodules: recursive # Add this to download WhisperEngine!
+          submodules: recursive
+
+      - name: Verify submodules were fetched
+        run: |
+          # If these are empty, the SwiftPM targets have no sources and the
+          # build fails much later with a confusing error. Fail fast instead.
+          for d in ThirdParty/whisper.cpp ThirdParty/llama.cpp; do
+            if [ -z "$(ls -A "$d" 2>/dev/null)" ]; then
+              echo "::error::$d is empty - submodule not checked out"
+              exit 1
+            fi
+          done
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -25,6 +41,11 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           PROVISIONING_PROFILE_NAME: ${{ secrets.PROVISIONING_PROFILE_NAME }}
 
+      - name: Show generated project and schemes
+        run: |
+          ls -d *.xcodeproj
+          xcodebuild -list -project "${APP_NAME}.xcodeproj"
+
       - name: Install Apple Certificate and Provisioning Profile
         env:
           BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
@@ -32,37 +53,39 @@ jobs:
           BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
           KEYCHAIN_PASSWORD: ${{ github.run_id }}
         run: |
-          # Create variables
           CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
           PP_PATH=$RUNNER_TEMP/build_pp.mobileprovision
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
 
-          # Import certificate and provisioning profile from secrets
           echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o $CERTIFICATE_PATH
           echo -n "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode -o $PP_PATH
 
-          # Create temporary keychain
           security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
           security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
 
-          # Import certificate to keychain
-          security import $CERTIFICATE_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security import $CERTIFICATE_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 \
+            -k $KEYCHAIN_PATH -T /usr/bin/codesign -T /usr/bin/security
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-
-          # Add the keychain to the search list so xcodebuild can actually find
-          # the imported identity (without this, signing fails with
-          # "No signing certificate found" even though the cert is imported).
           security list-keychain -d user -s $KEYCHAIN_PATH
 
-          # Diagnostic: list valid codesigning identities. If this prints
-          # "0 valid identities found", the .p12 is missing its private key
-          # (regenerate it with `openssl pkcs12 -export -legacy ...`).
+          # If this prints "0 valid identities found", the .p12 has no private
+          # key - regenerate with `openssl pkcs12 -export -legacy ...`
           security find-identity -v -p codesigning $KEYCHAIN_PATH
 
-          # Apply provisioning profile
+          # Xcode 16+ reads profiles from this directory
+          mkdir -p ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles
+          UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" \
+            /dev/stdin <<< "$(security cms -D -i $PP_PATH)")
+          cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
+          cp $PP_PATH ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/$UUID.mobileprovision
+
+          # Print the profile's name + app ID so you can confirm they match
+          # PROVISIONING_PROFILE_NAME and BUNDLE_ID
+          security cms -D -i $PP_PATH > $RUNNER_TEMP/pp.plist
+          /usr/libexec/PlistBuddy -c "Print :Name" $RUNNER_TEMP/pp.plist
+          /usr/libexec/PlistBuddy -c "Print :Entitlements:application-identifier" $RUNNER_TEMP/pp.plist
 
       - name: Generate ExportOptions.plist
         run: |
@@ -72,14 +95,14 @@ jobs:
           <plist version="1.0">
           <dict>
               <key>method</key>
-              <string>app-store</string>
+              <string>app-store-connect</string>
               <key>teamID</key>
               <string>${{ secrets.APPLE_TEAM_ID }}</string>
               <key>signingStyle</key>
               <string>manual</string>
               <key>provisioningProfiles</key>
               <dict>
-                  <key>com.Fortress.CapSureTranscribeTranscribe</key>
+                  <key>${{ env.BUNDLE_ID }}</key>
                   <string>${{ secrets.PROVISIONING_PROFILE_NAME }}</string>
               </dict>
               <key>compileBitcode</key>
@@ -87,27 +110,37 @@ jobs:
           </dict>
           </plist>
           EOF
+          cat ExportOptions.plist
 
       - name: Build and Archive App
         run: |
           xcodebuild archive \
-            -project CapSureTranscribeTranscribe.xcodeproj \
-            -scheme CapSureTranscribeTranscribe \
-            -sdk iphoneos \
+            -project "${APP_NAME}.xcodeproj" \
+            -scheme "${APP_NAME}" \
+            -destination "generic/platform=iOS" \
             -configuration Release \
-            -archivePath $PWD/build/CapSureTranscribeTranscribe.xcarchive \
+            -archivePath "$PWD/build/${APP_NAME}.xcarchive" \
+            -allowProvisioningUpdates NO \
             CODE_SIGNING_ALLOWED=YES \
             CODE_SIGNING_REQUIRED=YES
-            
+
       - name: Export IPA
         run: |
           xcodebuild -exportArchive \
-            -archivePath $PWD/build/CapSureTranscribeTranscribe.xcarchive \
+            -archivePath "$PWD/build/${APP_NAME}.xcarchive" \
             -exportOptionsPlist ExportOptions.plist \
-            -exportPath $PWD/build/export
+            -exportPath "$PWD/build/export"
 
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CapSureTranscribeTranscribe-IPA
+          name: ${{ env.APP_NAME }}-IPA
           path: build/export/*.ipa
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcresult
+          path: /var/folders/**/ResultBundle_*.xcresult
+          if-no-files-found: ignore
