@@ -88,8 +88,31 @@ jobs:
           PP_PATH=$RUNNER_TEMP/build_pp.mobileprovision
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
 
-          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o $CERTIFICATE_PATH
-          echo -n "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode -o $PP_PATH
+          # Strip ALL whitespace before decoding. Pasting into the GitHub UI
+          # can introduce newlines, and a single stray character makes the
+          # decoded output garbage rather than failing loudly.
+          printf '%s' "$BUILD_CERTIFICATE_BASE64" | tr -d '[:space:]' | base64 --decode > $CERTIFICATE_PATH
+          printf '%s' "$BUILD_PROVISION_PROFILE_BASE64" | tr -d '[:space:]' | base64 --decode > $PP_PATH
+
+          echo "--- decoded file check ---"
+          for f in "$CERTIFICATE_PATH:p12" "$PP_PATH:profile"; do
+            path="${f%%:*}"; label="${f##*:}"
+            size=$(stat -f%z "$path" 2>/dev/null || echo 0)
+            echo "$label: size=${size} bytes  md5=$(md5 -q "$path" 2>/dev/null || echo n/a)"
+            if [ "$size" -lt 100 ]; then
+              echo "::error::Decoded $label is only ${size} bytes. The secret is empty, truncated, or not base64."
+              exit 1
+            fi
+            # Both a .p12 and a .mobileprovision are DER, which always starts
+            # with 0x30 (ASN.1 SEQUENCE). Anything else means the secret holds
+            # the wrong content - a file path, PEM text, or a partial paste.
+            magic=$(od -An -tx1 -N1 "$path" | tr -d " \n")
+            if [ "$magic" != "30" ]; then
+              echo "::error::Decoded $label does not look like DER (first byte 0x${magic}, expected 0x30). Check what was pasted into the secret."
+              exit 1
+            fi
+          done
+          echo "    both files look structurally valid"
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
           security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
