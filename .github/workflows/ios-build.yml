@@ -79,7 +79,7 @@ jobs:
               <string>manual</string>
               <key>provisioningProfiles</key>
               <dict>
-                  <key>com.Fortress.CapSure</key>
+                  <key>com.Fortress.CapSureTranscribeTranscribe</key>
                   <string>${{ secrets.PROVISIONING_PROFILE_NAME }}</string>
               </dict>
               <key>compileBitcode</key>
@@ -91,23 +91,23 @@ jobs:
       - name: Build and Archive App
         run: |
           xcodebuild archive \
-            -project CapSure.xcodeproj \
-            -scheme CapSure \
+            -project CapSureTranscribeTranscribe.xcodeproj \
+            -scheme CapSureTranscribeTranscribe \
             -sdk iphoneos \
             -configuration Release \
-            -archivePath $PWD/build/CapSure.xcarchive \
+            -archivePath $PWD/build/CapSureTranscribeTranscribe.xcarchive \
             CODE_SIGNING_ALLOWED=YES \
             CODE_SIGNING_REQUIRED=YES
             
       - name: Export IPA
         run: |
           xcodebuild -exportArchive \
-            -archivePath $PWD/build/CapSure.xcarchive \
+            -archivePath $PWD/build/CapSureTranscribeTranscribe.xcarchive \
             -exportOptionsPlist ExportOptions.plist \
             -exportPath $PWD/build/export
 
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CapSure-IPA
+          name: CapSureTranscribeTranscribe-IPA
           path: build/export/*.ipa
