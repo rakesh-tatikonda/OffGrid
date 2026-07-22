@@ -59,3 +59,17 @@ targets:
         product: WhisperEngine
       - package: OffGridNativeEngines
         product: LlamaEngine
+
+# Explicit shared scheme. Without this, XcodeGen emits no scheme and
+# `xcodebuild -scheme CapSureTranscribe` can fail in CI with
+# "The project does not contain a scheme named CapSureTranscribe"
+# (Xcode only auto-creates schemes when the project is opened in the IDE).
+schemes:
+  CapSureTranscribe:
+    build:
+      targets:
+        CapSureTranscribe: all
+    run:
+      config: Debug
+    archive:
+      config: Release
