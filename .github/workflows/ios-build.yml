@@ -4,6 +4,11 @@ on:
   push:
     branches: [ "main" ]
   workflow_dispatch:
+    inputs:
+      upload_to_testflight:
+        description: "Upload the IPA to App Store Connect"
+        type: boolean
+        default: false
 
 env:
   # Single source of truth. Must match `name:` and the target name in project.yml.
@@ -17,7 +22,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -39,6 +44,9 @@ jobs:
           P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
           BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
           BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
         run: |
           # Prints only character counts, never values. A length of 0 means the
           # secret is not reaching this job - most often because it is an
@@ -52,6 +60,22 @@ jobs:
             if [ -z "$val" ]; then fail=1; fi
           done
 
+          # App Store Connect secrets are only required when uploading, so they
+          # are reported but do not fail the build.
+          for name in ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY; do
+            eval "val=\${$name}"
+            printf '%-32s length=%s\n' "$name" "${#val}"
+          done
+
+          # Key IDs are 10 chars, issuer IDs are 36-char UUIDs. Catching a
+          # swapped pair here saves a confusing 401 from altool later.
+          if [ -n "$ASC_KEY_ID" ] && [ "${#ASC_KEY_ID}" -ne 10 ]; then
+            echo "::warning::ASC_KEY_ID is ${#ASC_KEY_ID} chars; expected 10"
+          fi
+          if [ -n "$ASC_ISSUER_ID" ] && [ "${#ASC_ISSUER_ID}" -ne 36 ]; then
+            echo "::warning::ASC_ISSUER_ID is ${#ASC_ISSUER_ID} chars; expected a 36-char UUID"
+          fi
+
           # Team IDs are 10 alphanumeric characters. A different length here
           # usually means a whole Apple Developer account name got pasted in.
           if [ "${#APPLE_TEAM_ID}" -ne 10 ] && [ -n "$APPLE_TEAM_ID" ]; then
@@ -64,7 +88,12 @@ jobs:
           fi
 
       - name: Install XcodeGen
-        run: brew install xcodegen
+        run: |
+          # The macOS runner image ships with aws/tap pre-tapped for AWS SAM CLI.
+          # Homebrew now requires explicit tap trust and warns loudly on every
+          # brew invocation. Nothing here needs it, so drop it.
+          brew untap aws/tap || true
+          brew install xcodegen
 
       - name: Generate Xcode Project
         run: xcodegen generate
@@ -205,6 +234,10 @@ jobs:
 
       - name: Build and Archive App
         run: |
+          # CURRENT_PROJECT_VERSION drives CFBundleVersion. App Store Connect
+          # permanently rejects a build number it has already accepted, and
+          # github.run_number is monotonic per workflow, so it never collides.
+          # REQUIRES project.yml to set CFBundleVersion: $(CURRENT_PROJECT_VERSION)
           xcodebuild archive \
             -project "${APP_NAME}.xcodeproj" \
             -scheme "${APP_NAME}" \
@@ -212,6 +245,7 @@ jobs:
             -configuration Release \
             -archivePath "$PWD/build/${APP_NAME}.xcarchive" \
             -resultBundlePath "$PWD/build/archive.xcresult" \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
             CODE_SIGNING_ALLOWED=YES \
             CODE_SIGNING_REQUIRED=YES
 
@@ -222,15 +256,90 @@ jobs:
             -exportOptionsPlist ExportOptions.plist \
             -exportPath "$PWD/build/export"
 
+      - name: Confirm the IPA carries the expected version
+        run: |
+          IPA=$(ls build/export/*.ipa | head -1)
+          echo "IPA_PATH=$IPA" >> "$GITHUB_ENV"
+          echo "found: $IPA ($(du -h "$IPA" | cut -f1))"
+
+          # Read the version straight out of the signed bundle. This is the
+          # value App Store Connect will compare against, so checking the
+          # project settings instead would prove nothing.
+          workdir=$(mktemp -d)
+          unzip -q "$IPA" -d "$workdir"
+          plist="$workdir/Payload/${APP_NAME}.app/Info.plist"
+          short=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$plist")
+          build=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$plist")
+          echo "CFBundleShortVersionString: $short"
+          echo "CFBundleVersion:            $build"
+          if [ "$build" != "${{ github.run_number }}" ]; then
+            echo "::warning::CFBundleVersion is '$build', not ${{ github.run_number }}. project.yml is likely hardcoding it instead of using \$(CURRENT_PROJECT_VERSION); the next upload will be rejected as a duplicate."
+          fi
+
       - name: Upload IPA Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ env.APP_NAME }}-IPA
           path: build/export/*.ipa
+          if-no-files-found: error
+
+      - name: Install App Store Connect API key
+        if: github.event_name == 'workflow_dispatch' && inputs.upload_to_testflight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+        run: |
+          # altool takes no path argument for the key. It scans a fixed set of
+          # directories for a file named exactly AuthKey_<KEY_ID>.p8, so the
+          # filename below is load-bearing.
+          mkdir -p ~/private_keys
+          KEY_PATH=~/private_keys/AuthKey_${ASC_KEY_ID}.p8
+          printf '%s' "$ASC_PRIVATE_KEY" | tr -d '[:space:]' | base64 --decode > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+
+          # A .p8 is PEM, not DER, so the DER check used for the .p12 does not
+          # apply here - check for the PEM header instead.
+          if ! head -1 "$KEY_PATH" | grep -q "BEGIN PRIVATE KEY"; then
+            echo "::error::Decoded ASC_PRIVATE_KEY is not a PEM private key. Re-create the secret with: base64 -i AuthKey_XXXXXXXXXX.p8 | pbcopy"
+            exit 1
+          fi
+          echo "installed $(basename "$KEY_PATH") ($(wc -c < "$KEY_PATH") bytes)"
+
+      - name: Validate IPA against App Store Connect
+        if: github.event_name == 'workflow_dispatch' && inputs.upload_to_testflight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          # Catches missing usage-description strings, bad icon sizes, and
+          # duplicate build numbers in under a minute, instead of failing at
+          # the end of a full upload.
+          xcrun altool --validate-app \
+            -f "$IPA_PATH" \
+            -t ios \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID"
+
+      - name: Upload to App Store Connect
+        if: github.event_name == 'workflow_dispatch' && inputs.upload_to_testflight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          xcrun altool --upload-app \
+            -f "$IPA_PATH" \
+            -t ios \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID"
+          echo "Upload accepted. Processing takes 5-30 minutes before the build appears in TestFlight."
+
+      - name: Remove App Store Connect API key
+        if: always()
+        run: rm -rf ~/private_keys
 
       - name: Upload build logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: xcresult
           path: build/archive.xcresult
