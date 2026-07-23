@@ -60,8 +60,8 @@ jobs:
             if [ -z "$val" ]; then fail=1; fi
           done
 
-          # App Store Connect secrets are only required when uploading, so they
-          # are reported but do not fail the build.
+          # App Store Connect secrets are only needed when uploading, so these
+          # are reported but never fail an ordinary build.
           for name in ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY; do
             eval "val=\${$name}"
             printf '%-32s length=%s\n' "$name" "${#val}"
@@ -90,8 +90,8 @@ jobs:
       - name: Install XcodeGen
         run: |
           # The macOS runner image ships with aws/tap pre-tapped for AWS SAM CLI.
-          # Homebrew now requires explicit tap trust and warns loudly on every
-          # brew invocation. Nothing here needs it, so drop it.
+          # Homebrew now requires explicit tap trust and warns on every brew
+          # invocation. Nothing here needs that tap, so drop it.
           brew untap aws/tap || true
           brew install xcodegen
 
@@ -105,6 +105,32 @@ jobs:
         run: |
           ls -d *.xcodeproj
           xcodebuild -list -project "${APP_NAME}.xcodeproj"
+
+      - name: Set build number
+        run: |
+          # App Store Connect permanently rejects a CFBundleVersion it has
+          # already accepted. github.run_number is monotonic per workflow file,
+          # so it never collides. This must happen BEFORE the archive - editing
+          # a plist after signing invalidates the signature.
+          #
+          # Ask the project where its Info.plist is rather than guessing, since
+          # XcodeGen may place it anywhere.
+          plist=$(xcodebuild -showBuildSettings \
+            -project "${APP_NAME}.xcodeproj" \
+            -scheme "${APP_NAME}" \
+            -configuration Release 2>/dev/null \
+            | awk -F' = ' '/ INFOPLIST_FILE /{gsub(/^[ \t]+|[ \t\r]+$/,"",$2); print $2; exit}')
+
+          if [ -n "$plist" ] && [ -f "$plist" ]; then
+            echo "patching $plist"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ github.run_number }}" "$plist"
+            /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$plist" | sed 's/^/CFBundleVersion now: /'
+          else
+            # No plist file on disk means the project uses GENERATE_INFOPLIST_FILE.
+            # In that case the build-setting override in the archive step is the
+            # correct mechanism and there is nothing to patch here.
+            echo "no INFOPLIST_FILE on disk; relying on CURRENT_PROJECT_VERSION override"
+          fi
 
       - name: Install Apple Certificate and Provisioning Profile
         env:
@@ -234,10 +260,6 @@ jobs:
 
       - name: Build and Archive App
         run: |
-          # CURRENT_PROJECT_VERSION drives CFBundleVersion. App Store Connect
-          # permanently rejects a build number it has already accepted, and
-          # github.run_number is monotonic per workflow, so it never collides.
-          # REQUIRES project.yml to set CFBundleVersion: $(CURRENT_PROJECT_VERSION)
           xcodebuild archive \
             -project "${APP_NAME}.xcodeproj" \
             -scheme "${APP_NAME}" \
@@ -263,17 +285,17 @@ jobs:
           echo "found: $IPA ($(du -h "$IPA" | cut -f1))"
 
           # Read the version straight out of the signed bundle. This is the
-          # value App Store Connect will compare against, so checking the
-          # project settings instead would prove nothing.
+          # value App Store Connect compares against, so checking project
+          # settings instead would prove nothing.
           workdir=$(mktemp -d)
           unzip -q "$IPA" -d "$workdir"
-          plist="$workdir/Payload/${APP_NAME}.app/Info.plist"
+          plist=$(ls "$workdir"/Payload/*.app/Info.plist | head -1)
           short=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$plist")
           build=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$plist")
           echo "CFBundleShortVersionString: $short"
           echo "CFBundleVersion:            $build"
           if [ "$build" != "${{ github.run_number }}" ]; then
-            echo "::warning::CFBundleVersion is '$build', not ${{ github.run_number }}. project.yml is likely hardcoding it instead of using \$(CURRENT_PROJECT_VERSION); the next upload will be rejected as a duplicate."
+            echo "::warning::CFBundleVersion is '$build', not ${{ github.run_number }}. The 'Set build number' step did not take effect; this upload may be rejected as a duplicate."
           fi
 
       - name: Upload IPA Artifact
@@ -284,7 +306,7 @@ jobs:
           if-no-files-found: error
 
       - name: Install App Store Connect API key
-        if: github.event_name == 'workflow_dispatch' && inputs.upload_to_testflight
+        if: inputs.upload_to_testflight
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
@@ -298,21 +320,21 @@ jobs:
           chmod 600 "$KEY_PATH"
 
           # A .p8 is PEM, not DER, so the DER check used for the .p12 does not
-          # apply here - check for the PEM header instead.
+          # apply - look for the PEM header instead.
           if ! head -1 "$KEY_PATH" | grep -q "BEGIN PRIVATE KEY"; then
-            echo "::error::Decoded ASC_PRIVATE_KEY is not a PEM private key. Re-create the secret with: base64 -i AuthKey_XXXXXXXXXX.p8 | pbcopy"
+            echo "::error::Decoded ASC_PRIVATE_KEY is not a PEM private key. Re-create the secret from the base64 of AuthKey_<KEY_ID>.p8"
             exit 1
           fi
           echo "installed $(basename "$KEY_PATH") ($(wc -c < "$KEY_PATH") bytes)"
 
       - name: Validate IPA against App Store Connect
-        if: github.event_name == 'workflow_dispatch' && inputs.upload_to_testflight
+        if: inputs.upload_to_testflight
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
-          # Catches missing usage-description strings, bad icon sizes, and
-          # duplicate build numbers in under a minute, instead of failing at
+          # Catches missing usage-description strings, bad icon sizes and
+          # duplicate build numbers in under a minute, rather than failing at
           # the end of a full upload.
           xcrun altool --validate-app \
             -f "$IPA_PATH" \
@@ -321,7 +343,7 @@ jobs:
             --apiIssuer "$ASC_ISSUER_ID"
 
       - name: Upload to App Store Connect
-        if: github.event_name == 'workflow_dispatch' && inputs.upload_to_testflight
+        if: inputs.upload_to_testflight
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
