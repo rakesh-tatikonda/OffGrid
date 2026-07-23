@@ -1,5 +1,8 @@
 name: iOS Build and Export
 
+# SECURITY-AUDITED VERSION — see docs/SECURITY_AUDIT.md (CI-01 … CI-06).
+# Every original step is preserved; the signing-related ones are hardened.
+
 on:
   push:
     branches: [ "main" ]
@@ -9,6 +12,12 @@ on:
         description: "Upload the IPA to App Store Connect"
         type: boolean
         default: false
+
+# CI-05: the original declared no `permissions:` block, so this job inherited
+# the repository default GITHUB_TOKEN scope — read/write across contents,
+# packages and issues on older repos. A build job only needs to read.
+permissions:
+  contents: read
 
 env:
   # Single source of truth. Must match `name:` and the target name in project.yml.
@@ -21,10 +30,18 @@ jobs:
     runs-on: macos-latest
 
     steps:
+      # CI-04: TODO before you rely on this pipeline — pin these actions to an
+      # immutable commit SHA, e.g.
+      #     uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      # A mutable tag can be re-pointed by whoever controls the action repo, and
+      # this job hands that process every signing secret it holds. Tags are left
+      # in place here so the workflow still runs unmodified; substitute SHAs you
+      # have actually vetted.
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
           submodules: recursive
+          persist-credentials: false      # CI-05: no token left in .git/config
 
       - name: Verify submodules were fetched
         run: |
@@ -137,17 +154,27 @@ jobs:
           BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
           P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
           BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
-          KEYCHAIN_PASSWORD: ${{ github.run_id }}
         run: |
+          set -euo pipefail
+
           CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
           PP_PATH=$RUNNER_TEMP/build_pp.mobileprovision
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
 
+          # CI-01: the original used `KEYCHAIN_PASSWORD: ${{ github.run_id }}`.
+          # The run ID is NOT a secret - it appears in the URL of every workflow
+          # run and in the REST API - so the keychain holding the Apple
+          # Distribution private key was protected by a publicly known value.
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+
+          umask 077
+
           # Strip ALL whitespace before decoding. Pasting into the GitHub UI
           # can introduce newlines, and a single stray character makes the
           # decoded output garbage rather than failing loudly.
-          printf '%s' "$BUILD_CERTIFICATE_BASE64" | tr -d '[:space:]' | base64 --decode > $CERTIFICATE_PATH
-          printf '%s' "$BUILD_PROVISION_PROFILE_BASE64" | tr -d '[:space:]' | base64 --decode > $PP_PATH
+          printf '%s' "$BUILD_CERTIFICATE_BASE64" | tr -d '[:space:]' | base64 --decode > "$CERTIFICATE_PATH"
+          printf '%s' "$BUILD_PROVISION_PROFILE_BASE64" | tr -d '[:space:]' | base64 --decode > "$PP_PATH"
 
           echo "--- decoded file check ---"
           for f in "$CERTIFICATE_PATH:p12" "$PP_PATH:profile"; do
@@ -169,33 +196,43 @@ jobs:
           done
           echo "    both files look structurally valid"
 
-          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          # Inspect the .p12 BEFORE importing. A valid signing .p12 must
-          # contain both a certificate AND a private key. If "PRIVATE KEY"
-          # count is 0, the export was cert-only - that is the whole bug.
-          echo "--- p12 contents ---"
-          openssl pkcs12 -in $CERTIFICATE_PATH -passin pass:"$P12_PASSWORD" -nokeys -passout pass:x 2>/dev/null \
-            | grep -c "BEGIN CERTIFICATE" | sed 's/^/certificates: /'
-          openssl pkcs12 -in $CERTIFICATE_PATH -passin pass:"$P12_PASSWORD" -nocerts -passout pass:x 2>/dev/null \
-            | grep -c "BEGIN.*PRIVATE KEY" | sed 's/^/private keys: /'
-          echo "--- certificate subject ---"
-          openssl pkcs12 -in $CERTIFICATE_PATH -passin pass:"$P12_PASSWORD" -nokeys -clcerts 2>/dev/null \
-            | openssl x509 -noout -subject -dates 2>/dev/null || echo "could not parse certificate"
+          # CI-02: the original ran three `openssl pkcs12` diagnostics here, one
+          # of them `-nocerts`, which DECRYPTS THE SIGNING PRIVATE KEY and pipes
+          # it in cleartext to `grep -c`. It also passed the passphrase as
+          # `-passin pass:"$P12_PASSWORD"`, placing it in the process argument
+          # list where any concurrent process on the runner can read it via `ps`.
+          #
+          # Removed. `security import` below already fails loudly on a key-less
+          # .p12 and `find-identity` confirms the result, so those diagnostics
+          # proved nothing that is not proven two lines later. If you do want a
+          # pre-import check, read the passphrase from the environment, never
+          # from argv:
+          #
+          #   openssl pkcs12 -in "$CERTIFICATE_PATH" -passin env:P12_PASSWORD -nokeys -noout
 
-          # Note: no -t flag. Restricting to -t cert can skip the private key
-          # on some .p12 files; letting security infer the type imports both.
-          security import $CERTIFICATE_PATH -P "$P12_PASSWORD" -A -f pkcs12 \
-            -k $KEYCHAIN_PATH -T /usr/bin/codesign -T /usr/bin/security
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security list-keychain -d user -s $KEYCHAIN_PATH
+          # CI-03: dropped `-A`. That flag grants EVERY application on the
+          # machine unprompted access to the private key. The `-T` entries
+          # already grant exactly the two binaries that need it.
+          security import "$CERTIFICATE_PATH" -P "$P12_PASSWORD" -f pkcs12 \
+            -k "$KEYCHAIN_PATH" -T /usr/bin/codesign -T /usr/bin/security
+
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" > /dev/null
+
+          # CI-06: append to the user search list instead of replacing it, and
+          # record the original so the cleanup step can restore it.
+          security list-keychains -d user | tr -d '"' | xargs > "$RUNNER_TEMP/original-keychains.txt"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(cat "$RUNNER_TEMP/original-keychains.txt")
+          echo "$KEYCHAIN_PATH" > "$RUNNER_TEMP/keychain-path.txt"
 
           echo "--- codesigning identities in keychain ---"
-          security find-identity -v -p codesigning $KEYCHAIN_PATH
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
           # Fail here rather than 10 minutes later inside xcodebuild
-          if security find-identity -v -p codesigning $KEYCHAIN_PATH | grep -q "0 valid identities found"; then
+          if security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -q "0 valid identities found"; then
             echo "::error::No usable signing identity. The .p12 is missing its private key, or was exported with an OpenSSL 3 cipher macOS cannot read. Re-export with: openssl pkcs12 -export -legacy -inkey key.pem -in cert.pem -out cert.p12"
             exit 1
           fi
@@ -203,8 +240,8 @@ jobs:
           # Decode the profile ONCE to a real file. PlistBuddy reading from
           # /dev/stdin is unreliable - it sometimes reports "file does not
           # exist" because it seeks the input.
-          security cms -D -i $PP_PATH > $RUNNER_TEMP/pp.plist
-          UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" $RUNNER_TEMP/pp.plist)
+          security cms -D -i "$PP_PATH" > "$RUNNER_TEMP/pp.plist"
+          UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" "$RUNNER_TEMP/pp.plist")
           if [ -z "$UUID" ]; then
             echo "::error::Could not read UUID from provisioning profile. BUILD_PROVISION_PROFILE_BASE64 may be truncated or not a .mobileprovision."
             exit 1
@@ -213,39 +250,35 @@ jobs:
           # Xcode 16+ reads from UserData; older paths kept for safety
           mkdir -p ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
-          cp $PP_PATH ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/$UUID.mobileprovision
+          cp "$PP_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
+          cp "$PP_PATH" ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/$UUID.mobileprovision
 
           # Confirm these match PROVISIONING_PROFILE_NAME and BUNDLE_ID
           echo "--- provisioning profile ---"
-          /usr/libexec/PlistBuddy -c "Print :Name" $RUNNER_TEMP/pp.plist
-          /usr/libexec/PlistBuddy -c "Print :Entitlements:application-identifier" $RUNNER_TEMP/pp.plist
-          /usr/libexec/PlistBuddy -c "Print :ExpirationDate" $RUNNER_TEMP/pp.plist
+          /usr/libexec/PlistBuddy -c "Print :Name" "$RUNNER_TEMP/pp.plist"
+          /usr/libexec/PlistBuddy -c "Print :Entitlements:application-identifier" "$RUNNER_TEMP/pp.plist"
+          /usr/libexec/PlistBuddy -c "Print :ExpirationDate" "$RUNNER_TEMP/pp.plist"
 
+      # CI-02: build the plist via PlistBuddy from environment variables rather
+      # than interpolating `${{ secrets.* }}` into a heredoc, and stop `cat`-ing
+      # the result into the build log.
       - name: Generate ExportOptions.plist
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          PROVISIONING_PROFILE_NAME: ${{ secrets.PROVISIONING_PROFILE_NAME }}
         run: |
-          cat <<EOF > ExportOptions.plist
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>method</key>
-              <string>app-store-connect</string>
-              <key>teamID</key>
-              <string>${{ secrets.APPLE_TEAM_ID }}</string>
-              <key>signingStyle</key>
-              <string>manual</string>
-              <key>provisioningProfiles</key>
-              <dict>
-                  <key>${{ env.BUNDLE_ID }}</key>
-                  <string>${{ secrets.PROVISIONING_PROFILE_NAME }}</string>
-              </dict>
-              <key>compileBitcode</key>
-              <false/>
-          </dict>
-          </plist>
-          EOF
-          cat ExportOptions.plist
+          set -euo pipefail
+          rm -f ExportOptions.plist
+          /usr/libexec/PlistBuddy -c "Save" ExportOptions.plist
+          /usr/libexec/PlistBuddy \
+            -c "Add :method string app-store-connect" \
+            -c "Add :teamID string ${APPLE_TEAM_ID}" \
+            -c "Add :signingStyle string manual" \
+            -c "Add :provisioningProfiles dict" \
+            -c "Add :provisioningProfiles:${BUNDLE_ID} string ${PROVISIONING_PROFILE_NAME}" \
+            -c "Add :compileBitcode bool false" \
+            ExportOptions.plist
+          echo "ExportOptions.plist written (contents not logged)"
 
       - name: Show resolved signing settings
         run: |
@@ -298,6 +331,7 @@ jobs:
             echo "::warning::CFBundleVersion is '$build', not ${{ github.run_number }}. The 'Set build number' step did not take effect; this upload may be rejected as a duplicate."
           fi
 
+      # CI-04: pin to a SHA (see the note on the checkout step).
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v6
         with:
@@ -314,6 +348,7 @@ jobs:
           # altool takes no path argument for the key. It scans a fixed set of
           # directories for a file named exactly AuthKey_<KEY_ID>.p8, so the
           # filename below is load-bearing.
+          umask 077
           mkdir -p ~/private_keys
           KEY_PATH=~/private_keys/AuthKey_${ASC_KEY_ID}.p8
           printf '%s' "$ASC_PRIVATE_KEY" | tr -d '[:space:]' | base64 --decode > "$KEY_PATH"
@@ -355,9 +390,27 @@ jobs:
             --apiIssuer "$ASC_ISSUER_ID"
           echo "Upload accepted. Processing takes 5-30 minutes before the build appears in TestFlight."
 
-      - name: Remove App Store Connect API key
+      # CI-06: the original removed only the App Store Connect key. The signing
+      # keychain - holding the distribution certificate AND its private key -
+      # was never deleted, and the user keychain search list was never restored.
+      # Harmless on ephemeral GitHub-hosted runners; a persistent credential
+      # leak on a self-hosted one.
+      - name: Clean up signing material
         if: always()
-        run: rm -rf ~/private_keys
+        run: |
+          set +e
+          if [ -f "$RUNNER_TEMP/original-keychains.txt" ]; then
+            security list-keychains -d user -s $(cat "$RUNNER_TEMP/original-keychains.txt")
+          fi
+          if [ -f "$RUNNER_TEMP/keychain-path.txt" ]; then
+            security delete-keychain "$(cat "$RUNNER_TEMP/keychain-path.txt")"
+          fi
+          rm -rf ~/private_keys
+          rm -f "$RUNNER_TEMP/build_certificate.p12" \
+                "$RUNNER_TEMP/build_pp.mobileprovision" \
+                "$RUNNER_TEMP/pp.plist" \
+                ExportOptions.plist
+          exit 0
 
       - name: Upload build logs on failure
         if: failure()

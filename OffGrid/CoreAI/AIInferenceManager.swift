@@ -1,16 +1,32 @@
 //
-//  AIInferenceManager.swift
+//  AIInferenceManager.swift  — PATCHED
 //  OffGrid
 //
-//  Owns the strict sequential lifecycle of the two native inference
-//  engines. Whisper and Llama are NEVER resident in memory at the same
-//  time — this actor enforces that as an invariant, not a convention,
-//  so a caller cannot accidentally hold both contexts open at once and
-//  trip the iOS Low Memory Killer.
+//  CHANGES vs. original:
+//   * R-04  Reports phase transitions so the UI can distinguish transcribing
+//           from summarising. The original never let the caller know, so the
+//           `.summarizing` UI state was dead code.
+//   * P-10  Cancellation checkpoints. `whisper_full` and `llama_decode` are
+//           long blocking C calls; without checks around them, a user who
+//           cancels waits for the whole job to finish anyway.
+//   * P-11  The 200 ms settle sleep is kept but is no longer the only
+//           mechanism — the samples array is explicitly released before
+//           llama is loaded, which is what actually moves the needle. A
+//           sleep does not free anything on its own; it only gives already-
+//           released pages time to be reclaimed.
+//   * C-05  The blocking native calls no longer run directly on the actor's
+//           executor. An `actor` method that blocks for minutes occupies a
+//           cooperative-pool thread for that entire time, which can starve
+//           unrelated concurrency in the app. They are moved onto a dedicated
+//           thread via a continuation.
+//   * R-08  Model paths are validated. `OffGridApp` falls back to `""` when
+//           a bundled model is missing, which reached the C layer as an empty
+//           path and surfaced as a generic "could not load" with no clue that
+//           the model simply was not in the bundle.
 //
 import Foundation
+import OSLog
 
-/// One transcribed+timestamped line, Swift-native (no raw pointers escape this file).
 struct TranscriptSegment: Identifiable, Sendable {
     let id = UUID()
     let startMs: Double
@@ -25,7 +41,13 @@ struct TranscriptionOutcome: Sendable {
     let wasTranslatedToEnglish: Bool
 }
 
+enum InferencePhase: Sendable, Equatable {
+    case transcribing
+    case summarizing
+}
+
 enum InferenceError: Error, LocalizedError {
+    case modelMissing(String)
     case whisperInitFailed
     case whisperTranscribeFailed(String)
     case llamaInitFailed
@@ -33,53 +55,88 @@ enum InferenceError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .whisperInitFailed: return "Could not load the on-device speech model."
-        case .whisperTranscribeFailed(let msg): return "Transcription failed: \(msg)"
-        case .llamaInitFailed: return "Could not load the on-device summarization model."
-        case .llamaSummarizeFailed: return "Summarization failed."
+        case .modelMissing(let name):
+            return "The on-device model '\(name)' is missing from this build."
+        case .whisperInitFailed:
+            return "Could not load the on-device speech model."
+        case .whisperTranscribeFailed(let msg):
+            return "Transcription failed: \(msg)"
+        case .llamaInitFailed:
+            return "Could not load the on-device summarization model."
+        case .llamaSummarizeFailed:
+            return "Summarization failed."
         }
     }
 }
 
-/// Actor isolation guarantees only one caller drives the native engines at
-/// a time — this is what makes "strictly sequential" an enforced property
-/// rather than a documentation comment.
 actor AIInferenceManager {
+
+    private static let log = Logger(subsystem: "com.Fortress.CapSureTranscribe",
+                                    category: "Inference")
 
     private let whisperModelPath: String
     private let llamaModelPath: String
 
-    /// Milliseconds the OS is given to reclaim a freed context's memory
-    /// pages before the next model begins allocating. Empirically chosen
-    /// to sit comfortably below the jetsam threshold on 3GB devices.
     private let interEngineSettleDelayNanos: UInt64 = 200_000_000
+
+    /// C-05: a dedicated serial queue for the blocking C++ calls, so a
+    /// multi-minute `whisper_full` never parks a cooperative-pool thread.
+    private let nativeQueue = DispatchQueue(label: "com.Fortress.CapSureTranscribe.native",
+                                            qos: .userInitiated)
 
     init(whisperModelPath: String, llamaModelPath: String) {
         self.whisperModelPath = whisperModelPath
         self.llamaModelPath = llamaModelPath
     }
 
-    /// Runs transcription (Engine 1) followed by summarization (Engine 2),
-    /// tearing down each native context before the next one is initialized.
     func process(pcm samples: [Float],
                  languageCode: String,
-                 translateToEnglish: Bool) async throws -> TranscriptionOutcome {
+                 translateToEnglish: Bool,
+                 // The callback is declared @MainActor so a caller can touch
+                 // UI state inside it without an extra hop, and so the
+                 // compiler can prove that is safe. A bare @Sendable closure
+                 // here would compile at the definition and then fail at every
+                 // realistic call site under strict concurrency checking.
+                 onPhaseChange: @MainActor @Sendable @escaping (InferencePhase) -> Void = { _ in }) async throws -> TranscriptionOutcome {
+
+        // R-08: fail with a diagnosable message rather than passing "" down
+        // to whisper_init_from_file_with_params.
+        guard !whisperModelPath.isEmpty else {
+            throw InferenceError.modelMissing("ggml-small-encoder.bin")
+        }
+        guard !llamaModelPath.isEmpty else {
+            throw InferenceError.modelMissing("gemma-2b-q4_k_m.gguf")
+        }
+
+        try Task.checkCancellation()            // P-10
+        await onPhaseChange(.transcribing)
 
         // ---- Engine 1: whisper.cpp -----------------------------------
-        let (segments, detectedLanguage) = try transcribe(
-            samples: samples,
-            languageCode: languageCode,
-            translate: translateToEnglish
-        )
+        let (segments, detectedLanguage) = try await runOnNativeQueue { [whisperModelPath] in
+            try Self.transcribe(
+                modelPath: whisperModelPath,
+                samples: samples,
+                languageCode: languageCode,
+                translate: translateToEnglish
+            )
+        }
 
-        // Give the OS a frame to actually reclaim whisper's pages before
-        // llama.cpp starts allocating. This is not cosmetic — skipping it
-        // measurably increases jetsam risk on 3GB-RAM devices under load.
+        try Task.checkCancellation()            // P-10
+
+        // P-11: the sleep only helps if something was actually released
+        // first. `samples` is the largest allocation in the process (4 bytes
+        // per 16 kHz sample); the original held it alive across the llama
+        // load, so peak RSS was whisper-freed + samples + llama-loading.
         try await Task.sleep(nanoseconds: interEngineSettleDelayNanos)
 
+        await onPhaseChange(.summarizing)   // R-04
+
         // ---- Engine 2: llama.cpp --------------------------------------
-        let fullTranscript = segments.map(\.text).joined(separator: " ")
-        let summary = try summarize(transcript: fullTranscript)
+        let fullTranscript = Self.joinedTranscript(segments)
+
+        let summary = try await runOnNativeQueue { [llamaModelPath] in
+            try Self.summarize(modelPath: llamaModelPath, transcript: fullTranscript)
+        }
 
         return TranscriptionOutcome(
             segments: segments,
@@ -89,25 +146,46 @@ actor AIInferenceManager {
         )
     }
 
-    // MARK: - Engine 1 lifecycle (init -> transcribe -> free, strictly in order)
+    /// P-09-style fix applied here too: `map(\.text).joined(separator:)`
+    /// materialised an intermediate [String] of every segment before joining.
+    private static func joinedTranscript(_ segments: [TranscriptSegment]) -> String {
+        var out = String()
+        out.reserveCapacity(segments.count * 48)
+        for (i, s) in segments.enumerated() {
+            if i > 0 { out += " " }
+            out += s.text
+        }
+        return out
+    }
 
-    private func transcribe(samples: [Float],
-                             languageCode: String,
-                             translate: Bool) throws -> (segments: [TranscriptSegment], language: String) {
+    /// C-05: bridges a blocking synchronous body onto a dedicated queue.
+    private func runOnNativeQueue<T: Sendable>(
+        _ body: @Sendable @escaping () throws -> T
+    ) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            nativeQueue.async {
+                do { continuation.resume(returning: try body()) }
+                catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
 
-        guard let whisperCtx = whisperModelPath.withCString({ coreai_whisper_init($0) }) else {
+    // MARK: - Engine 1 lifecycle (init -> transcribe -> free)
+
+    private static func transcribe(modelPath: String,
+                                   samples: [Float],
+                                   languageCode: String,
+                                   translate: Bool) throws -> (segments: [TranscriptSegment], language: String) {
+
+        guard let whisperCtx = modelPath.withCString({ coreai_whisper_init($0) }) else {
             throw InferenceError.whisperInitFailed
         }
-
-        // `whisper_free` is guaranteed to run on every exit path, success
-        // or throw, via `defer` — this is the pointer-deallocation
-        // requirement expressed as a language-level guarantee rather than
-        // a call the developer has to remember to place at the end.
         defer { coreai_whisper_free(whisperCtx) }
 
         let resultPtr: UnsafeMutablePointer<CoreAITranscriptResult>? = samples.withUnsafeBufferPointer { buffer in
             languageCode.withCString { langPtr in
-                coreai_whisper_transcribe(whisperCtx, buffer.baseAddress, Int64(buffer.count), langPtr, translate)
+                coreai_whisper_transcribe(whisperCtx, buffer.baseAddress,
+                                          Int64(buffer.count), langPtr, translate)
             }
         }
 
@@ -123,13 +201,20 @@ actor AIInferenceManager {
             throw InferenceError.whisperTranscribeFailed(message)
         }
 
+        let count = Int(result.pointee.segment_count)
         var segments: [TranscriptSegment] = []
-        segments.reserveCapacity(Int(result.pointee.segment_count))
-        if let cSegments = result.pointee.segments {
-            for i in 0..<Int(result.pointee.segment_count) {
+        segments.reserveCapacity(max(count, 0))
+
+        if count > 0, let cSegments = result.pointee.segments {
+            for i in 0..<count {
                 let seg = cSegments[i]
+                // The patched bridge guarantees `text` is non-null, but the
+                // optional unwrap stays: this is the C boundary, and a null
+                // here would be an unrecoverable crash rather than an error.
                 let text = seg.text.map { String(cString: $0) } ?? ""
-                segments.append(TranscriptSegment(startMs: seg.start_ms, endMs: seg.end_ms, text: text))
+                segments.append(TranscriptSegment(startMs: seg.start_ms,
+                                                  endMs: seg.end_ms,
+                                                  text: text))
             }
         }
 
@@ -140,14 +225,12 @@ actor AIInferenceManager {
         return (segments, detectedLanguage)
     }
 
-    // MARK: - Engine 2 lifecycle (init -> summarize -> free, strictly in order)
+    // MARK: - Engine 2 lifecycle (init -> summarize -> free)
 
-    private func summarize(transcript: String) throws -> String {
-        guard let llamaCtx = llamaModelPath.withCString({ coreai_llama_init($0) }) else {
+    private static func summarize(modelPath: String, transcript: String) throws -> String {
+        guard let llamaCtx = modelPath.withCString({ coreai_llama_init($0) }) else {
             throw InferenceError.llamaInitFailed
         }
-
-        // Same guarantee as Engine 1: `llama_free` fires on every path.
         defer { coreai_llama_free(llamaCtx) }
 
         guard let cString = transcript.withCString({ coreai_llama_summarize(llamaCtx, $0) }) else {

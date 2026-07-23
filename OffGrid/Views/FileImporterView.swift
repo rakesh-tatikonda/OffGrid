@@ -1,91 +1,143 @@
 //
-//  FileImporterView.swift
+//  FileImporterView.swift  — PATCHED
 //  OffGrid
 //
-//  Native Files-app document picker. Never requests the Photos or
-//  broader storage permission — `.fileImporter` uses the system's own
-//  security-scoped bookmark mechanism, so OffGrid only ever gains
-//  access to the exact file the user selects, for exactly as long as
-//  the security-scoped access block is open.
+//  CHANGES vs. original:
+//   * P-08 (HIGH)  `importFile` was `@MainActor` and called
+//                  `FileManager.copyItem` on it. Importing a 2 GB video froze
+//                  the UI for the entire copy; past ~20 s the watchdog kills
+//                  the app with 0x8badf00d, which reads to the user as a
+//                  random crash on large files. The copy now runs on a
+//                  detached task; only the security-scope handshake and the
+//                  UI state stay on the main actor.
+//   * S-14        Import size ceiling. Nothing bounded how much a single
+//                  import could write into Caches.
+//   * S-15        The sandbox copy is created under Data Protection (via the
+//                  patched SandboxPaths) and a partial copy is cleaned up on
+//                  failure, so an aborted import cannot leave a plaintext
+//                  fragment behind.
+//   * C-03        Migrated from ObservableObject/@Published to @Observable —
+//                  @Published invalidates every observing view on any change;
+//                  @Observable tracks per-property reads.
 //
+import Observation
 import SwiftUI
 import UniformTypeIdentifiers
 
 enum FileImportError: Error, LocalizedError {
     case accessDenied
     case copyFailed(Error)
+    case tooLarge(bytes: Int64, limit: Int64)
 
     var errorDescription: String? {
         switch self {
-        case .accessDenied: return "OffGrid couldn't get permission to read that file."
-        case .copyFailed(let e): return "Couldn't copy the file into the secure sandbox: \(e.localizedDescription)"
+        case .accessDenied:
+            return "OffGrid couldn't get permission to read that file."
+        case .copyFailed(let e):
+            return "Couldn't copy the file into the secure sandbox: \(e.localizedDescription)"
+        case .tooLarge(_, let limit):
+            return "That file is larger than the \(limit / 1_073_741_824) GB import limit."
         }
     }
 }
 
 @MainActor
-final class FileImportCoordinator: ObservableObject {
+@Observable
+final class FileImportCoordinator {
 
-    @Published var isImporting = false
-    @Published var lastError: FileImportError?
+    /// S-14
+    static let maximumImportBytes: Int64 = 4 * 1_024 * 1_024 * 1_024   // 4 GB
+
+    var isImporting = false
+    var isCopying = false
+    var lastError: FileImportError?
 
     static let supportedMediaTypes: [UTType] = [
         .mpeg4Movie, .quickTimeMovie, .movie,
         .mp3, .wav, .mpeg4Audio, .audio
     ]
 
-    /// Performs the full security-scoped handshake and returns metadata
-    /// for a copy of the file living inside OffGrid's own encrypted
-    /// sandbox cache — the caller hands `sandboxURL` straight to
-    /// `AudioPipeline.extractPCM(from:)`.
-    func importFile(from result: Result<URL, Error>) throws -> IngestedMedia {
-        let sourceURL: URL
-        switch result {
-        case .success(let url): sourceURL = url
-        case .failure(let error): throw error
-        }
+    /// Performs the security-scoped handshake, then copies off the main
+    /// actor. The scope must be opened and closed around the whole copy, so
+    /// the handshake is passed into the detached task rather than being
+    /// closed before it starts.
+    func importFile(from sourceURL: URL) async throws -> IngestedMedia {
+        isCopying = true
+        defer { isCopying = false }
 
-        guard sourceURL.startAccessingSecurityScopedResource() else {
-            throw FileImportError.accessDenied
-        }
-        defer { sourceURL.stopAccessingSecurityScopedResource() }
+        let originalName = sourceURL.lastPathComponent
+        let destination = SandboxPaths.newSandboxURL(preservingExtensionOf: sourceURL)
+        let limit = Self.maximumImportBytes
 
-        let sandboxURL = SandboxPaths.newSandboxURL(preservingExtensionOf: sourceURL)
+        // P-08: the copy itself is the expensive part and it does not touch
+        // any main-actor state.
+        try await Task.detached(priority: .userInitiated) {
+            guard sourceURL.startAccessingSecurityScopedResource() else {
+                throw FileImportError.accessDenied
+            }
+            defer { sourceURL.stopAccessingSecurityScopedResource() }
 
-        do {
-            try FileManager.default.copyItem(at: sourceURL, to: sandboxURL)
-        } catch {
-            throw FileImportError.copyFailed(error)
-        }
+            // S-14: check before copying, not after.
+            let values = try? sourceURL.resourceValues(forKeys: [.fileSizeKey])
+            if let size = values?.fileSize, Int64(size) > limit {
+                throw FileImportError.tooLarge(bytes: Int64(size), limit: limit)
+            }
 
-        return IngestedMedia(sandboxURL: sandboxURL, originalFileName: sourceURL.lastPathComponent)
+            do {
+                try FileManager.default.copyItem(at: sourceURL, to: destination)
+                // S-15: belt and braces on top of the directory's inherited
+                // protection class.
+                try? FileManager.default.setAttributes(
+                    [.protectionKey: FileProtectionType.completeUnlessOpen],
+                    ofItemAtPath: destination.path
+                )
+            } catch let error as FileImportError {
+                throw error
+            } catch {
+                // S-15: never leave a truncated copy behind.
+                try? FileManager.default.removeItem(at: destination)
+                throw FileImportError.copyFailed(error)
+            }
+        }.value
+
+        return IngestedMedia(sandboxURL: destination, originalFileName: originalName)
     }
 }
 
 struct FileImporterButton: View {
-    @StateObject private var coordinator = FileImportCoordinator()
+    @State private var coordinator = FileImportCoordinator()
     let onImported: (IngestedMedia) -> Void
 
     var body: some View {
         Button {
             coordinator.isImporting = true
         } label: {
-            Label("Import from Files", systemImage: "folder.badge.plus")
+            if coordinator.isCopying {
+                HStack {
+                    ProgressView()
+                    Text("Copying…")
+                }
+            } else {
+                Label("Import from Files", systemImage: "folder.badge.plus")
+            }
         }
+        .disabled(coordinator.isCopying)
         .fileImporter(
             isPresented: $coordinator.isImporting,
             allowedContentTypes: FileImportCoordinator.supportedMediaTypes,
             allowsMultipleSelection: false
         ) { result in
-            do {
-                let urls = try result.get()
-                guard let first = urls.first else { throw FileImportError.accessDenied }
-                let media = try coordinator.importFile(from: .success(first))
-                onImported(media)
-            } catch let error as FileImportError {
-                coordinator.lastError = error
-            } catch {
-                coordinator.lastError = .copyFailed(error)
+            Task {
+                do {
+                    let urls = try result.get()
+                    guard let first = urls.first else { throw FileImportError.accessDenied }
+                    let media = try await coordinator.importFile(from: first)
+                    onImported(media)
+                } catch let error as FileImportError {
+                    coordinator.lastError = error
+                } catch {
+                    coordinator.lastError = .copyFailed(error)
+                }
             }
         }
         .alert(

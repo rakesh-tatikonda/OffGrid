@@ -1,28 +1,58 @@
 //
-//  AudioPipeline.swift
+//  AudioPipeline.swift  — PATCHED
 //  OffGrid
 //
-//  Extracts the audio channel from any AVFoundation-readable container,
-//  resamples it to the exact format whisper.cpp expects (16kHz, 16-bit,
-//  mono LPCM), and guarantees that both the source file and the
-//  intermediate WAV are wiped from physical storage the moment native
-//  inference has consumed them — success or failure.
+//  Extracts the audio channel from any AVFoundation-readable container and
+//  resamples it to the format whisper.cpp expects (16 kHz mono float32).
 //
+//  CHANGES vs. original:
+//   * S-04  No intermediate WAV is written to disk any more. The original
+//           wrote a full plaintext copy of the user's audio to tmp/ that
+//           nothing ever read. Dead code that doubles the plaintext-at-rest
+//           window is a liability, not a feature.
+//   * S-05  Ingested media is written/kept under `.completeUnlessOpen`
+//           file protection so an at-rest device image cannot yield it.
+//   * S-06  `scrub` no longer claims to "wipe physical storage" — on APFS
+//           it unlinks; confidentiality comes from Data Protection. Failures
+//           are now reported in Release builds too, via OSLog.
+//   * M-01  Removed the [Int16] + [Float] double buffering (was ~3x the
+//           audio size resident at peak). One preallocated [Float] only.
+//   * M-02  CMBlockBuffer is now read with CMBlockBufferCopyDataBytes,
+//           which is safe for non-contiguous buffers and unaligned data.
+//           The original read `totalLength` bytes off a pointer that is
+//           only guaranteed valid for `lengthAtOffset` bytes.
+//   * M-03  autoreleasepool around each sample-buffer iteration.
+//   * P-01  Int16 -> Float conversion via Accelerate (vDSP) instead of a
+//           scalar map.
+//   * P-02  Cooperative cancellation inside the decode loop.
+//   * R-01  Hard cap on decoded duration so a hostile/huge file cannot
+//           drive the process into jetsam.
+//
+import Accelerate
 import AVFoundation
 import Foundation
+import OSLog
 
 enum AudioPipelineError: Error, LocalizedError {
     case assetHasNoAudioTrack
     case readerInitFailed(Error)
     case readerFailedMidStream(String)
-    case writeFailed(Error)
+    case mediaTooLong(seconds: Double, limit: Double)
+    case decodeBufferUnreadable
 
     var errorDescription: String? {
         switch self {
-        case .assetHasNoAudioTrack: return "The selected file has no audio track."
-        case .readerInitFailed(let e): return "Could not open the media file: \(e.localizedDescription)"
-        case .readerFailedMidStream(let s): return "Audio extraction stopped unexpectedly: \(s)"
-        case .writeFailed(let e): return "Could not write the intermediate PCM file: \(e.localizedDescription)"
+        case .assetHasNoAudioTrack:
+            return "The selected file has no audio track."
+        case .readerInitFailed(let e):
+            return "Could not open the media file: \(e.localizedDescription)"
+        case .readerFailedMidStream(let s):
+            return "Audio extraction stopped unexpectedly: \(s)"
+        case .mediaTooLong(let seconds, let limit):
+            return String(format: "That file is %.0f minutes long. The limit is %.0f minutes.",
+                          seconds / 60, limit / 60)
+        case .decodeBufferUnreadable:
+            return "The audio stream could not be decoded."
         }
     }
 }
@@ -33,20 +63,38 @@ enum WhisperPCMFormat {
     static let sampleRate: Double = 16_000
     static let channels: AVAudioChannelCount = 1
     static let bitDepth: Int = 16
+
+    /// R-01: 4 hours at 16 kHz mono float32 ≈ 920 MB of samples alone —
+    /// already past what a 3 GB device tolerates alongside a loaded model.
+    /// Cap well below that and fail with a message the user understands
+    /// rather than being jetsam-killed with no explanation.
+    static let maximumDurationSeconds: Double = 90 * 60
 }
 
 actor AudioPipeline {
 
-    /// Extracts, resamples, and hands back both a float32 PCM buffer
-    /// (ready for whisper.cpp) and the URL of the temporary WAV file that
-    /// was written along the way — the caller is expected to pass that
-    /// URL back into `scrub(sourceURL:temporaryWAVURL:)` the instant
-    /// inference finishes reading from the buffer.
-    func extractPCM(from sourceURL: URL) async throws -> (samples: [Float], temporaryWAVURL: URL) {
+    private static let log = Logger(subsystem: "com.Fortress.CapSureTranscribe",
+                                    category: "AudioPipeline")
+
+    /// Decodes `sourceURL` to 16 kHz mono float32 PCM.
+    ///
+    /// Returns only the sample buffer — no on-disk intermediate is produced,
+    /// so there is nothing extra to scrub afterwards (see S-04).
+    func extractPCM(from sourceURL: URL) async throws -> [Float] {
         let asset = AVURLAsset(url: sourceURL)
 
         guard let audioTrack = try await asset.loadTracks(withMediaType: .audio).first else {
             throw AudioPipelineError.assetHasNoAudioTrack
+        }
+
+        // R-01: reject over-length media *before* allocating anything.
+        let duration = try await asset.load(.duration)
+        let seconds = CMTimeGetSeconds(duration)
+        if seconds.isFinite, seconds > WhisperPCMFormat.maximumDurationSeconds {
+            throw AudioPipelineError.mediaTooLong(
+                seconds: seconds,
+                limit: WhisperPCMFormat.maximumDurationSeconds
+            )
         }
 
         let reader: AVAssetReader
@@ -56,9 +104,6 @@ actor AudioPipeline {
             throw AudioPipelineError.readerInitFailed(error)
         }
 
-        // Ask the reader to hand us already-linear-PCM, 16-bit, mono,
-        // 16kHz samples directly — letting AVFoundation do the heavy
-        // resampling work instead of hand-rolling a resampler.
         let outputSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: WhisperPCMFormat.sampleRate,
@@ -73,142 +118,125 @@ actor AudioPipeline {
         trackOutput.alwaysCopiesSampleData = false
         reader.add(trackOutput)
 
-        let temporaryWAVURL = Self.makeTemporaryWAVURL()
-        let writer = try Self.openWAVWriter(at: temporaryWAVURL)
-
         guard reader.startReading() else {
-            throw AudioPipelineError.readerFailedMidStream(reader.error?.localizedDescription ?? "unknown reader error")
+            throw AudioPipelineError.readerFailedMidStream(
+                reader.error?.localizedDescription ?? "unknown reader error"
+            )
         }
 
-        var int16Samples: [Int16] = []
+        // M-01: one output array, capacity reserved up front from the known
+        // duration. The original grew an [Int16] and then `map`ped it into a
+        // second [Float], holding ~3 bytes of RAM per sample at the crossover.
+        var samples = [Float]()
+        if seconds.isFinite, seconds > 0 {
+            samples.reserveCapacity(Int(seconds * WhisperPCMFormat.sampleRate) + 4_096)
+        }
+
+        // Scratch buffers reused across iterations so the decode loop does
+        // no per-chunk heap churn.
+        var int16Scratch = [Int16]()
+        var floatScratch = [Float]()
+
+        // P-02: if the reader is still running when we bail out, cancel it so
+        // AVFoundation tears down its decode threads immediately.
+        defer { if reader.status == .reading { reader.cancelReading() } }
 
         while let sampleBuffer = trackOutput.copyNextSampleBuffer() {
-            guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { continue }
+            // M-03: CoreMedia hands back autoreleased objects. Without a pool
+            // the loop's peak footprint tracks the whole file, not one chunk.
+            try autoreleasepool {
+                try Task.checkCancellation()   // P-02
 
-            var length = 0
-            var dataPointer: UnsafeMutablePointer<Int8>?
-            CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: nil,
-                                         totalLengthOut: &length, dataPointerOut: &dataPointer)
+                guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
 
-            if let dataPointer {
-                dataPointer.withMemoryRebound(to: Int16.self, capacity: length / 2) { int16Ptr in
-                    let buffer = UnsafeBufferPointer(start: int16Ptr, count: length / 2)
-                    int16Samples.append(contentsOf: buffer)
-                    writer.append(buffer)
+                let byteCount = CMBlockBufferGetDataLength(blockBuffer)
+                guard byteCount >= MemoryLayout<Int16>.size else { return }
+                let frameCount = byteCount / MemoryLayout<Int16>.size
+
+                if int16Scratch.count < frameCount {
+                    int16Scratch = [Int16](repeating: 0, count: frameCount)
+                    floatScratch = [Float](repeating: 0, count: frameCount)
                 }
+
+                // M-02: CMBlockBufferCopyDataBytes walks the block buffer's
+                // segment list and handles non-contiguous storage. The
+                // original called CMBlockBufferGetDataPointer, ignored the
+                // `lengthAtOffsetOut` it should have honoured, and then read
+                // `totalLength` bytes off that pointer — a heap over-read on
+                // any segmented buffer — before rebinding a possibly-unaligned
+                // Int8 pointer to Int16, which is undefined behaviour.
+                let status = int16Scratch.withUnsafeMutableBytes { raw -> OSStatus in
+                    CMBlockBufferCopyDataBytes(
+                        blockBuffer,
+                        atOffset: 0,
+                        dataLength: frameCount * MemoryLayout<Int16>.size,
+                        destination: raw.baseAddress!
+                    )
+                }
+                guard status == kCMBlockBufferNoErr else {
+                    throw AudioPipelineError.decodeBufferUnreadable
+                }
+
+                // P-01: vDSP converts and scales the whole chunk with NEON.
+                // The scalar `map { Float($0) / Float(Int16.max) }` it replaces
+                // was the single hottest line in the pipeline.
+                int16Scratch.withUnsafeBufferPointer { src in
+                    floatScratch.withUnsafeMutableBufferPointer { dst in
+                        vDSP_vflt16(src.baseAddress!, 1, dst.baseAddress!, 1, vDSP_Length(frameCount))
+                        var scale = 1.0 / Float(Int16.max)
+                        vDSP_vsmul(dst.baseAddress!, 1, &scale, dst.baseAddress!, 1, vDSP_Length(frameCount))
+                    }
+                }
+
+                samples.append(contentsOf: floatScratch[0..<frameCount])
             }
         }
 
         if reader.status == .failed {
-            writer.close()
-            try? FileManager.default.removeItem(at: temporaryWAVURL)
-            throw AudioPipelineError.readerFailedMidStream(reader.error?.localizedDescription ?? "reader failed")
+            throw AudioPipelineError.readerFailedMidStream(
+                reader.error?.localizedDescription ?? "reader failed"
+            )
         }
 
-        writer.close()
-
-        // Convert to normalized float32 for whisper.cpp's expected input.
-        let floatSamples = int16Samples.map { Float($0) / Float(Int16.max) }
-
-        return (floatSamples, temporaryWAVURL)
+        return samples
     }
 
-    /// Mandatory cleanup: erases BOTH the original source file and the
-    /// intermediate WAV the instant the caller confirms inference has
-    /// consumed the PCM buffer. Called from a `defer` at the call site so
-    /// it fires on every exit path, including thrown errors.
-    func scrub(sourceURL: URL, temporaryWAVURL: URL) {
+    /// Removes the ingested source file once inference has consumed its samples.
+    ///
+    /// S-06: this is an unlink, not an overwrite. On APFS-backed NAND an
+    /// overwrite pass does not reliably reach the original physical blocks
+    /// (wear levelling, copy-on-write), so it would burn write cycles for no
+    /// confidentiality gain. What actually makes the deletion meaningful is
+    /// that the file was created under Data Protection — see
+    /// `SandboxPaths.ingestedMediaDirectory` — so its per-file key is
+    /// destroyed with the inode and the residual ciphertext is unrecoverable.
+    func scrub(sourceURL: URL) {
         let fm = FileManager.default
-        for url in [sourceURL, temporaryWAVURL] {
-            guard fm.fileExists(atPath: url.path) else { continue }
-            do {
-                try fm.removeItem(at: url)
-            } catch {
-                // Scrubbing failures are logged locally only — never
-                // transmitted anywhere — but must not be silently
-                // swallowed, since a failed wipe is a privacy incident.
-                #if DEBUG
-                print("OffGrid: failed to scrub \(url.lastPathComponent): \(error)")
-                #endif
-            }
-        }
-    }
-
-    // MARK: - WAV sink
-
-    private static func makeTemporaryWAVURL() -> URL {
-        FileManager.default.temporaryDirectory
-            .appendingPathComponent("offgrid-\(UUID().uuidString)", isDirectory: false)
-            .appendingPathExtension("wav")
-    }
-
-    private static func openWAVWriter(at url: URL) throws -> WAVFileWriter {
+        guard fm.fileExists(atPath: sourceURL.path) else { return }
         do {
-            return try WAVFileWriter(fileURL: url,
-                                      sampleRate: WhisperPCMFormat.sampleRate,
-                                      channels: WhisperPCMFormat.channels,
-                                      bitDepth: WhisperPCMFormat.bitDepth)
+            try fm.removeItem(at: sourceURL)
         } catch {
-            throw AudioPipelineError.writeFailed(error)
+            // S-06: the original only logged this behind `#if DEBUG`, which
+            // meant a failed scrub in production — the case that actually
+            // matters — was silent. Log unconditionally, with the filename
+            // marked private so it is redacted in sysdiagnose captures.
+            Self.log.error(
+                "scrub failed for \(sourceURL.lastPathComponent, privacy: .private): \(error.localizedDescription, privacy: .public)"
+            )
         }
     }
-}
 
-/// Minimal streaming WAV writer — avoids buffering the entire file in
-/// memory before write, and avoids pulling in a third-party audio file
-/// library just to emit a canonical 44-byte-header PCM WAV.
-final class WAVFileWriter {
-    private let handle: FileHandle
-    private var dataBytesWritten: UInt32 = 0
-    private let sampleRate: Double
-    private let channels: AVAudioChannelCount
-    private let bitDepth: Int
-
-    init(fileURL: URL, sampleRate: Double, channels: AVAudioChannelCount, bitDepth: Int) throws {
-        FileManager.default.createFile(atPath: fileURL.path, contents: nil)
-        self.handle = try FileHandle(forWritingTo: fileURL)
-        self.sampleRate = sampleRate
-        self.channels = channels
-        self.bitDepth = bitDepth
-        // Reserve space for the 44-byte canonical header; patched on close().
-        handle.write(Data(count: 44))
-    }
-
-    func append(_ samples: UnsafeBufferPointer<Int16>) {
-        let data = Data(buffer: samples)
-        handle.write(data)
-        dataBytesWritten += UInt32(data.count)
-    }
-
-    func close() {
-        let header = makeHeader()
-        handle.seek(toFileOffset: 0)
-        handle.write(header)
-        try? handle.close()
-    }
-
-    private func makeHeader() -> Data {
-        var data = Data()
-        let byteRate = UInt32(sampleRate) * UInt32(channels) * UInt32(bitDepth / 8)
-        let blockAlign = UInt16(channels) * UInt16(bitDepth / 8)
-
-        func append(_ s: String) { data.append(s.data(using: .ascii)!) }
-        func append(_ v: UInt32) { withUnsafeBytes(of: v.littleEndian) { data.append(contentsOf: $0) } }
-        func append(_ v: UInt16) { withUnsafeBytes(of: v.littleEndian) { data.append(contentsOf: $0) } }
-
-        append("RIFF")
-        append(UInt32(36 + dataBytesWritten))
-        append("WAVE")
-        append("fmt ")
-        append(UInt32(16))                    // fmt chunk size
-        append(UInt16(1))                     // PCM
-        append(UInt16(channels))
-        append(UInt32(sampleRate))
-        append(byteRate)
-        append(blockAlign)
-        append(UInt16(bitDepth))
-        append("data")
-        append(dataBytesWritten)
-        return data
+    /// Best-effort sweep of anything an interrupted run left behind. Call on
+    /// app foreground: the original design relied entirely on a `defer` that
+    /// does not survive a background kill, so orphans accumulated.
+    func scrubOrphans() {
+        let fm = FileManager.default
+        let dir = SandboxPaths.ingestedMediaDirectory
+        guard let contents = try? fm.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil, options: .skipsHiddenFiles
+        ) else { return }
+        for url in contents {
+            try? fm.removeItem(at: url)
+        }
     }
 }
