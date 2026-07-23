@@ -39,7 +39,7 @@ targets:
         # Values are injected from GitHub secrets when `xcodegen generate` runs.
         DEVELOPMENT_TEAM: "${APPLE_TEAM_ID}"
         CODE_SIGN_STYLE: Manual
-        CODE_SIGN_IDENTITY: "Apple Distribution"
+        CODE_SIGN_IDENTITY: "Apple Development"
         PROVISIONING_PROFILE_SPECIFIER: "${PROVISIONING_PROFILE_NAME}"
 
     # Generates the real Info.plist from these keys directly — encodes the
