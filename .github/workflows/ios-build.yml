@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 env:
-  # Single source of truth. Must match `name:` and the target name in project.yml
+  # Single source of truth. Must match `name:` and the target name in project.yml.
   APP_NAME: CapSureTranscribe
   BUNDLE_ID: com.Fortress.CapSureTranscribe
 
