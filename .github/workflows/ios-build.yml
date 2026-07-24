@@ -116,6 +116,86 @@ jobs:
           brew untap aws/tap || true
           brew install xcodegen
 
+      # ---------------------------------------------------------------------
+      # Models are NOT in the repository. They are hundreds of MB to ~1.5 GB,
+      # and .gitignore excludes *.gguf / *.bin / OffGrid/Resources/Models/ so
+      # they never bloat a clone. Without this step every CI build produces a
+      # model-less IPA that fails at inference with "model missing from this
+      # build" (finding R-08).
+      #
+      # Set MODEL_WHISPER_URL and MODEL_LLAMA_URL as repository secrets (or
+      # variables, if the hosting location is not sensitive). Any HTTPS source
+      # works — a GitHub release asset, S3/GCS presigned URL, or Hugging Face.
+      #
+      # FILENAMES ARE LOAD-BEARING. OffGridApp.swift looks up:
+      #     Bundle.main.path(forResource: "ggml-small-encoder", ofType: "bin")
+      #     Bundle.main.path(forResource: "gemma-2b-q4_k_m",     ofType: "gguf")
+      # A mismatch returns "" and surfaces as a missing-model error at runtime,
+      # not as a build failure — so it is checked explicitly below.
+      # ---------------------------------------------------------------------
+      - name: Fetch on-device models
+        if: ${{ !inputs.skip_models }}
+        env:
+          MODEL_WHISPER_URL: ${{ secrets.MODEL_WHISPER_URL }}
+          MODEL_LLAMA_URL: ${{ secrets.MODEL_LLAMA_URL }}
+          # Optional. Only needed if a source requires a bearer token, e.g. a
+          # gated Hugging Face repo or a private bucket. Unauthenticated
+          # requests against a gated repo return an HTML page rather than an
+          # error status, which is exactly what the size checks below catch.
+          MODEL_AUTH_TOKEN: ${{ secrets.MODEL_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          MODELS_DIR="OffGrid/Resources/Models"
+          mkdir -p "$MODELS_DIR"
+
+          # Secrets OVERRIDE these defaults. The defaults exist so a fresh
+          # clone builds without any repository configuration at all.
+          #
+          # For production you should still set the secrets and point them at
+          # your OWN mirror (a GitHub release asset, or a presigned S3/GCS
+          # URL). Depending on a third party's Hugging Face repo for every
+          # release build means their rename, deletion, or rate limit becomes
+          # your build failure.
+          WHISPER_URL="${MODEL_WHISPER_URL:-https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin}"
+          LLAMA_URL="${MODEL_LLAMA_URL:-https://huggingface.co/BafS/gemma-2-2b-it-Q4_K_M-GGUF/resolve/main/gemma-2-2b-it-q4_k_m.gguf}"
+
+          if [ -z "${MODEL_WHISPER_URL:-}" ] || [ -z "${MODEL_LLAMA_URL:-}" ]; then
+            echo "::warning::Using default public model URLs. Set MODEL_WHISPER_URL / MODEL_LLAMA_URL secrets to point at your own mirror before shipping."
+          fi
+
+          # NOTE: no arrays here. macOS runners ship Bash 3.2, where
+          # "${arr[@]}" on an EMPTY array under `set -u` aborts with
+          # "unbound variable" — that expansion only became safe in Bash 4.4.
+          # Two explicit curl invocations are duplicative but portable.
+          if [ -n "${MODEL_AUTH_TOKEN:-}" ]; then
+            echo "using bearer auth for model downloads"
+          fi
+
+          # Production thresholds: whisper small is ~488 MB, a 2B-class Q4_K_M
+          # GGUF is ~1.5 GB. Anything dramatically under means the download
+          # did not return weights.
+          fetch() {
+            url="$1"; dest="$2"; min="$3"; label="$4"
+            echo "downloading $label"
+            if [ -n "${MODEL_AUTH_TOKEN:-}" ]; then
+              curl -L --fail --silent --show-error \
+                -H "Authorization: Bearer ${MODEL_AUTH_TOKEN}" "$url" -o "$dest"
+            else
+              curl -L --fail --silent --show-error "$url" -o "$dest"
+            fi
+            size=$(stat -f%z "$dest" 2>/dev/null || echo 0)
+            printf '    %-30s %s bytes\n' "$(basename "$dest")" "$size"
+            if [ "$size" -lt "$min" ]; then
+              echo "::error::$dest is only ${size} bytes (expected >= ${min}). The URL likely returned an error page or a redirect stub. If the source is a gated repo, accept its terms and set the MODEL_AUTH_TOKEN secret."
+              exit 1
+            fi
+          }
+
+          fetch "$WHISPER_URL" "$MODELS_DIR/ggml-small-encoder.bin" 400000000 "speech model"
+          fetch "$LLAMA_URL"   "$MODELS_DIR/gemma-2b-q4_k_m.gguf"   800000000 "text model"
+
+          echo "total model payload: $(du -sh "$MODELS_DIR" | cut -f1)"
+
       - name: Generate Xcode Project
         run: xcodegen generate
         env:
@@ -126,6 +206,19 @@ jobs:
         run: |
           ls -d *.xcodeproj
           xcodebuild -list -project "${APP_NAME}.xcodeproj"
+
+          # XcodeGen builds its file list by scanning the filesystem at
+          # generation time. If the models were not on disk before
+          # `xcodegen generate` ran, they are absent from the project and will
+          # never be copied into the bundle - the archive still succeeds, and
+          # the failure only surfaces as a missing resource much later. Assert
+          # that the generated project actually references them.
+          if ! grep -q "ggml-small-encoder.bin" "${APP_NAME}.xcodeproj/project.pbxproj"; then
+            echo "::error::The generated project does not reference the model files. The 'Fetch on-device models' step must run BEFORE 'Generate Xcode Project'."
+            exit 1
+          fi
+          echo "models are referenced by the generated project"
+
 
       - name: Set build number
         run: |
@@ -294,86 +387,6 @@ jobs:
             -configuration Release 2>/dev/null \
             | grep -E "CODE_SIGN_IDENTITY|CODE_SIGN_STYLE|DEVELOPMENT_TEAM|PROVISIONING_PROFILE|PRODUCT_BUNDLE_IDENTIFIER" \
             | sort -u
-
-      # ---------------------------------------------------------------------
-      # Models are NOT in the repository. They are hundreds of MB to ~1.5 GB,
-      # and .gitignore excludes *.gguf / *.bin / OffGrid/Resources/Models/ so
-      # they never bloat a clone. Without this step every CI build produces a
-      # model-less IPA that fails at inference with "model missing from this
-      # build" (finding R-08).
-      #
-      # Set MODEL_WHISPER_URL and MODEL_LLAMA_URL as repository secrets (or
-      # variables, if the hosting location is not sensitive). Any HTTPS source
-      # works — a GitHub release asset, S3/GCS presigned URL, or Hugging Face.
-      #
-      # FILENAMES ARE LOAD-BEARING. OffGridApp.swift looks up:
-      #     Bundle.main.path(forResource: "ggml-small-encoder", ofType: "bin")
-      #     Bundle.main.path(forResource: "gemma-2b-q4_k_m",     ofType: "gguf")
-      # A mismatch returns "" and surfaces as a missing-model error at runtime,
-      # not as a build failure — so it is checked explicitly below.
-      # ---------------------------------------------------------------------
-      - name: Fetch on-device models
-        if: ${{ !inputs.skip_models }}
-        env:
-          MODEL_WHISPER_URL: ${{ secrets.MODEL_WHISPER_URL }}
-          MODEL_LLAMA_URL: ${{ secrets.MODEL_LLAMA_URL }}
-          # Optional. Only needed if a source requires a bearer token, e.g. a
-          # gated Hugging Face repo or a private bucket. Unauthenticated
-          # requests against a gated repo return an HTML page rather than an
-          # error status, which is exactly what the size checks below catch.
-          MODEL_AUTH_TOKEN: ${{ secrets.MODEL_AUTH_TOKEN }}
-        run: |
-          set -euo pipefail
-          MODELS_DIR="OffGrid/Resources/Models"
-          mkdir -p "$MODELS_DIR"
-
-          # Secrets OVERRIDE these defaults. The defaults exist so a fresh
-          # clone builds without any repository configuration at all.
-          #
-          # For production you should still set the secrets and point them at
-          # your OWN mirror (a GitHub release asset, or a presigned S3/GCS
-          # URL). Depending on a third party's Hugging Face repo for every
-          # release build means their rename, deletion, or rate limit becomes
-          # your build failure.
-          WHISPER_URL="${MODEL_WHISPER_URL:-https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin}"
-          LLAMA_URL="${MODEL_LLAMA_URL:-https://huggingface.co/BafS/gemma-2-2b-it-Q4_K_M-GGUF/resolve/main/gemma-2-2b-it-q4_k_m.gguf}"
-
-          if [ -z "${MODEL_WHISPER_URL:-}" ] || [ -z "${MODEL_LLAMA_URL:-}" ]; then
-            echo "::warning::Using default public model URLs. Set MODEL_WHISPER_URL / MODEL_LLAMA_URL secrets to point at your own mirror before shipping."
-          fi
-
-          # NOTE: no arrays here. macOS runners ship Bash 3.2, where
-          # "${arr[@]}" on an EMPTY array under `set -u` aborts with
-          # "unbound variable" — that expansion only became safe in Bash 4.4.
-          # Two explicit curl invocations are duplicative but portable.
-          if [ -n "${MODEL_AUTH_TOKEN:-}" ]; then
-            echo "using bearer auth for model downloads"
-          fi
-
-          # Production thresholds: whisper small is ~488 MB, a 2B-class Q4_K_M
-          # GGUF is ~1.5 GB. Anything dramatically under means the download
-          # did not return weights.
-          fetch() {
-            url="$1"; dest="$2"; min="$3"; label="$4"
-            echo "downloading $label"
-            if [ -n "${MODEL_AUTH_TOKEN:-}" ]; then
-              curl -L --fail --silent --show-error \
-                -H "Authorization: Bearer ${MODEL_AUTH_TOKEN}" "$url" -o "$dest"
-            else
-              curl -L --fail --silent --show-error "$url" -o "$dest"
-            fi
-            size=$(stat -f%z "$dest" 2>/dev/null || echo 0)
-            printf '    %-30s %s bytes\n' "$(basename "$dest")" "$size"
-            if [ "$size" -lt "$min" ]; then
-              echo "::error::$dest is only ${size} bytes (expected >= ${min}). The URL likely returned an error page or a redirect stub. If the source is a gated repo, accept its terms and set the MODEL_AUTH_TOKEN secret."
-              exit 1
-            fi
-          }
-
-          fetch "$WHISPER_URL" "$MODELS_DIR/ggml-small-encoder.bin" 400000000 "speech model"
-          fetch "$LLAMA_URL"   "$MODELS_DIR/gemma-2b-q4_k_m.gguf"   800000000 "text model"
-
-          echo "total model payload: $(du -sh "$MODELS_DIR" | cut -f1)"
 
       - name: Build and Archive App
         run: |
