@@ -3,6 +3,81 @@
 Offline-first iOS transcription/translation/summarization app. Swift 5.10,
 SwiftUI, iOS 17+. No analytics, no third-party cloud SDKs.
 
+---
+
+## ⚠️ START HERE — why a fresh checkout crashes on launch
+
+If the app dies immediately on launch, before any UI, every time — and the
+built `.app` is only a few hundred KB — nothing is wrong with the Swift code.
+**The native engines and the models were never assembled into the project.**
+
+`ThirdParty/whisper.cpp` and `ThirdParty/llama.cpp` are declared in
+`.gitmodules` but ship empty. There is no `OffGrid/Resources/Models/` at all.
+So:
+
+- `Package.swift` targets point at empty directories → nothing native compiles
+- `project.yml`'s `HEADER_SEARCH_PATHS` point at paths that don't exist
+- `CoreAIBridge.mm`'s `#include "whisper.h"` / `"llama.h"` resolve to nothing
+- `OffGridApp.swift`'s `Bundle.main.path(forResource:)` lookups return `""`
+
+Both products are declared `.library(type: .dynamic)`, and dyld resolves
+dynamic libraries **before `main()` runs** — before any SwiftUI code, before
+`PersistenceController`, before anything in this repo executes. A missing
+dylib therefore produces an identical crash in every build, patched or not:
+
+```
+dyld[…]: Library not loaded: @rpath/libWhisperEngine.dylib
+Termination Reason: DYLD, [1] Library missing
+```
+
+### Fix
+
+```bash
+git submodule update --init --recursive
+./scripts/setup-local-testing.sh      # fetches submodules + small test models
+```
+
+> **If you unzipped this rather than cloning it**, there is no `.git`
+> directory, so `git submodule update` has nothing to work with. Either clone
+> the repository proper, or run `git init` and re-add the two submodules from
+> `.gitmodules` before running the setup script.
+
+Then verify the thing that was actually broken:
+
+```bash
+ls YourApp.app/Frameworks/     # must contain the two dylibs
+```
+
+Empty or missing means the submodules still didn't take, and you will get the
+same dyld crash.
+
+### Two local-build gotchas
+
+1. **Signing.** `project.yml` hardcodes `CODE_SIGN_IDENTITY: "Apple
+   Distribution"` with `${APPLE_TEAM_ID}` / `${PROVISIONING_PROFILE_NAME}`,
+   which only CI populates. Locally they expand empty. **Build for a Simulator
+   target first** — signing isn't required there, and the build is CPU-only
+   anyway so you lose nothing on inference. Use a local-only override for
+   device builds rather than editing `project.yml`, or CI breaks.
+2. **`freeTierDurationLimit`.** `ContentView.swift` enforces a 10-minute cap
+   for non-premium users (finding R-05). Without a StoreKit configuration file
+   `isPremiumUser` is `false`, so longer test files are rejected before
+   inference — which looks like a bug. Set it to `.infinity` while testing.
+
+### Expected size once assembled
+
+| Config | Whisper | Text model | Total |
+|---|---|---|---|
+| Testing | `tiny.en` ~75 MB | 0.5–1B Q4_K_M ~350–700 MB | **~0.5–0.8 GB** |
+| Production | `small` ~488 MB | Gemma 2B Q4_K_M ~1.5 GB | **~2.0 GB** |
+
+App code and both dylibs together are only ~20 MB; the models are ~99% of the
+bundle. Apple's cap is 4 GB uncompressed, so production fits with roughly half
+the headroom spent. Quantised weights compress poorly, so the `.ipa` will not
+be much smaller than the installed size.
+
+---
+
 > **This tree is the security-audited revision.** A full findings report lives
 > at [`docs/SECURITY_AUDIT.md`](docs/SECURITY_AUDIT.md). Patched sources carry
 > inline `S-xx` / `M-xx` / `P-xx` / `CI-xx` markers that tie each edit back to a
