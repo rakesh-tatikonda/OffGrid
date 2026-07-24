@@ -342,9 +342,11 @@ jobs:
             echo "::warning::Using default public model URLs. Set MODEL_WHISPER_URL / MODEL_LLAMA_URL secrets to point at your own mirror before shipping."
           fi
 
-          AUTH=()
+          # NOTE: no arrays here. macOS runners ship Bash 3.2, where
+          # "${arr[@]}" on an EMPTY array under `set -u` aborts with
+          # "unbound variable" — that expansion only became safe in Bash 4.4.
+          # Two explicit curl invocations are duplicative but portable.
           if [ -n "${MODEL_AUTH_TOKEN:-}" ]; then
-            AUTH=(-H "Authorization: Bearer ${MODEL_AUTH_TOKEN}")
             echo "using bearer auth for model downloads"
           fi
 
@@ -354,7 +356,12 @@ jobs:
           fetch() {
             url="$1"; dest="$2"; min="$3"; label="$4"
             echo "downloading $label"
-            curl -L --fail --silent --show-error "${AUTH[@]}" "$url" -o "$dest"
+            if [ -n "${MODEL_AUTH_TOKEN:-}" ]; then
+              curl -L --fail --silent --show-error \
+                -H "Authorization: Bearer ${MODEL_AUTH_TOKEN}" "$url" -o "$dest"
+            else
+              curl -L --fail --silent --show-error "$url" -o "$dest"
+            fi
             size=$(stat -f%z "$dest" 2>/dev/null || echo 0)
             printf '    %-30s %s bytes\n' "$(basename "$dest")" "$size"
             if [ "$size" -lt "$min" ]; then

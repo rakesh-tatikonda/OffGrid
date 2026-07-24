@@ -118,10 +118,13 @@ fetch() {
   fi
 
   echo "    downloading $label"
-  local auth=()
-  [ -n "${HF_TOKEN:-}" ] && auth=(-H "Authorization: Bearer ${HF_TOKEN}")
-
-  curl -L --fail --progress-bar "${auth[@]}" "$url" -o "$dest"
+  # No arrays: macOS ships Bash 3.2, where "${arr[@]}" on an EMPTY array
+  # under `set -u` aborts with "unbound variable". Safe only from 4.4.
+  if [ -n "${HF_TOKEN:-}" ]; then
+    curl -L --fail --progress-bar -H "Authorization: Bearer ${HF_TOKEN}" "$url" -o "$dest"
+  else
+    curl -L --fail --progress-bar "$url" -o "$dest"
+  fi
 
   # A gated repo, an expired link, or a redirect stub all return a small
   # HTML body that would otherwise be archived as a "model" and only fail on
