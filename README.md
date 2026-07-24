@@ -34,7 +34,7 @@ Termination Reason: DYLD, [1] Library missing
 
 ```bash
 git submodule update --init --recursive
-./scripts/setup-local-testing.sh      # fetches submodules + small test models
+MODE=production ./scripts/setup-models.sh   # submodules + production models
 ```
 
 > **If you unzipped this rather than cloning it**, there is no `.git`
@@ -50,6 +50,79 @@ ls YourApp.app/Frameworks/     # must contain the two dylibs
 
 Empty or missing means the submodules still didn't take, and you will get the
 same dyld crash.
+
+### If the IPA is ~300 KB
+
+That is the same fault seen from the other side: the dynamic products were
+**linked but not embedded**, so they never land in `Payload/…app/Frameworks/`.
+The build goes green and the app dies in dyld. `project.yml` now carries
+`embed: true` / `codeSign: true` on both package dependencies.
+
+After `xcodegen generate`, confirm in Xcode: target -> General -> "Frameworks,
+Libraries, and Embedded Content" -> both products must read **Embed & Sign**.
+If your XcodeGen version does not honour `embed:` for package products, set it
+there by hand.
+
+Size checkpoints as you go:
+
+| State | Expected |
+|---|---|
+| Linked but not embedded (broken) | ~300 KB |
+| Embedded, no models | ~20 MB |
+| Embedded + testing models | ~0.5-0.8 GB |
+| Embedded + production models | ~2.0 GB |
+
+CI now asserts on all of this after export — a bundle under 20 MB, a missing
+`Frameworks/`, or a missing model file fails the build loudly instead of
+shipping an IPA that crashes on launch.
+
+### Models
+
+Models are not in the repository and never should be — `.gitignore` excludes
+`*.gguf`, `*.bin` and `OffGrid/Resources/Models/` so a 2 GB payload cannot
+bloat every clone permanently.
+
+Locally:
+
+```bash
+export LLAMA_URL="https://huggingface.co/<repo>/resolve/main/<file>.gguf"
+export HF_TOKEN="hf_..."                    # only if the repo is gated
+MODE=production ./scripts/setup-models.sh   # or MODE=testing
+```
+
+In CI, three repository secrets:
+
+```
+MODEL_WHISPER_URL   -> OffGrid/Resources/Models/ggml-small-encoder.bin
+MODEL_LLAMA_URL     -> OffGrid/Resources/Models/gemma-2b-q4_k_m.gguf
+MODEL_AUTH_TOKEN    -> optional bearer token for gated/private sources
+```
+
+Both filenames are load-bearing — they must match the
+`Bundle.main.path(forResource:)` lookups in `OffGridApp.swift` exactly,
+whatever the upstream file was called.
+
+**Mirror the weights to your own storage rather than pulling from Hugging
+Face in CI.** A release asset or a presigned S3/GCS URL removes the gating and
+token problem, survives an upstream repo being renamed or deleted, avoids rate
+limits, and makes builds reproducible. Fetching a third party's file on every
+release build makes your pipeline depend on their uptime and their naming.
+
+### Text model: licence and prompt format
+
+Two things to settle before shipping, neither of which is a technical problem:
+
+- **Licence.** The original Gemma releases ship under Google's Gemma Terms of
+  Use, *not* Apache 2.0, and those terms carry use restrictions you have to
+  pass through to your own users. For a paid App Store app that is a real
+  question, not a formality. Newer Gemma generations are Apache 2.0, which is
+  considerably simpler to redistribute commercially. Check the licence on the
+  exact model card you pull from — and note this is a legal question, so treat
+  the above as a prompt to verify rather than as advice.
+- **Prompt format.** `coreai_llama_summarize` hardcodes Gemma's chat template
+  (`<start_of_turn>user` … `<end_of_turn><start_of_turn>model`). Staying in
+  the Gemma family keeps it valid. Any other family will still run and emit
+  text, but summaries will be poor until you swap the template.
 
 ### Two local-build gotchas
 

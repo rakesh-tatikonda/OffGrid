@@ -291,6 +291,68 @@ jobs:
             | grep -E "CODE_SIGN_IDENTITY|CODE_SIGN_STYLE|DEVELOPMENT_TEAM|PROVISIONING_PROFILE|PRODUCT_BUNDLE_IDENTIFIER" \
             | sort -u
 
+      # ---------------------------------------------------------------------
+      # Models are NOT in the repository. They are hundreds of MB to ~1.5 GB,
+      # and .gitignore excludes *.gguf / *.bin / OffGrid/Resources/Models/ so
+      # they never bloat a clone. Without this step every CI build produces a
+      # model-less IPA that fails at inference with "model missing from this
+      # build" (finding R-08).
+      #
+      # Set MODEL_WHISPER_URL and MODEL_LLAMA_URL as repository secrets (or
+      # variables, if the hosting location is not sensitive). Any HTTPS source
+      # works — a GitHub release asset, S3/GCS presigned URL, or Hugging Face.
+      #
+      # FILENAMES ARE LOAD-BEARING. OffGridApp.swift looks up:
+      #     Bundle.main.path(forResource: "ggml-small-encoder", ofType: "bin")
+      #     Bundle.main.path(forResource: "gemma-2b-q4_k_m",     ofType: "gguf")
+      # A mismatch returns "" and surfaces as a missing-model error at runtime,
+      # not as a build failure — so it is checked explicitly below.
+      # ---------------------------------------------------------------------
+      - name: Fetch on-device models
+        env:
+          MODEL_WHISPER_URL: ${{ secrets.MODEL_WHISPER_URL }}
+          MODEL_LLAMA_URL: ${{ secrets.MODEL_LLAMA_URL }}
+          # Optional. Only needed if a source requires a bearer token, e.g. a
+          # gated Hugging Face repo or a private bucket. Unauthenticated
+          # requests against a gated repo return an HTML page rather than an
+          # error status, which is exactly what the size checks below catch.
+          MODEL_AUTH_TOKEN: ${{ secrets.MODEL_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          MODELS_DIR="OffGrid/Resources/Models"
+          mkdir -p "$MODELS_DIR"
+
+          if [ -z "${MODEL_WHISPER_URL:-}" ] || [ -z "${MODEL_LLAMA_URL:-}" ]; then
+            echo "::error::MODEL_WHISPER_URL and/or MODEL_LLAMA_URL are not set. The IPA would ship without on-device models and fail at inference on every device. Add them as repository secrets."
+            exit 1
+          fi
+
+          AUTH=()
+          if [ -n "${MODEL_AUTH_TOKEN:-}" ]; then
+            AUTH=(-H "Authorization: Bearer ${MODEL_AUTH_TOKEN}")
+            echo "using bearer auth for model downloads"
+          fi
+
+          # Production thresholds: whisper small is ~488 MB, a 2B-class Q4_K_M
+          # GGUF is ~1.5 GB. Anything dramatically under means the download
+          # did not return weights.
+          fetch() {
+            url="$1"; dest="$2"; min="$3"; label="$4"
+            echo "downloading $label"
+            curl -L --fail --silent --show-error "${AUTH[@]}" "$url" -o "$dest"
+            size=$(stat -f%z "$dest" 2>/dev/null || echo 0)
+            printf '    %-30s %s bytes\n' "$(basename "$dest")" "$size"
+            if [ "$size" -lt "$min" ]; then
+              echo "::error::$dest is only ${size} bytes (expected >= ${min}). The URL likely returned an error page or a redirect stub. If the source is a gated repo, accept its terms and set the MODEL_AUTH_TOKEN secret."
+              exit 1
+            fi
+          }
+
+          fetch "$MODEL_WHISPER_URL" "$MODELS_DIR/ggml-small-encoder.bin" 400000000 "speech model"
+          fetch "$MODEL_LLAMA_URL"   "$MODELS_DIR/gemma-2b-q4_k_m.gguf"   800000000 "text model"
+
+          echo "total model payload: $(du -sh "$MODELS_DIR" | cut -f1)"
+
       - name: Build and Archive App
         run: |
           xcodebuild archive \
@@ -329,6 +391,51 @@ jobs:
           echo "CFBundleVersion:            $build"
           if [ "$build" != "${{ github.run_number }}" ]; then
             echo "::warning::CFBundleVersion is '$build', not ${{ github.run_number }}. The 'Set build number' step did not take effect; this upload may be rejected as a duplicate."
+          fi
+
+          # -------------------------------------------------------------
+          # Bundle-content checks. Without these, a build that links the
+          # native engines but never EMBEDS them exports a ~300 KB IPA that
+          # builds green and then dies in dyld before main() on every launch.
+          # That failure is invisible to xcodebuild, so assert on it here.
+          # -------------------------------------------------------------
+          app=$(ls -d "$workdir"/Payload/*.app | head -1)
+
+          echo "--- embedded frameworks ---"
+          if [ ! -d "$app/Frameworks" ]; then
+            echo "::error::No Frameworks/ directory in the app bundle. The SwiftPM dynamic products were linked but not embedded - the app will crash in dyld on launch. Check the 'embed: true' entries under dependencies: in project.yml."
+            exit 1
+          fi
+          ls -lh "$app/Frameworks"
+
+          for lib in WhisperEngine LlamaEngine; do
+            if ! ls "$app/Frameworks" | grep -qi "$lib"; then
+              echo "::error::$lib is missing from Frameworks/. It was linked but not embedded."
+              exit 1
+            fi
+          done
+
+          echo "--- bundled models ---"
+          for m in ggml-small-encoder.bin gemma-2b-q4_k_m.gguf; do
+            if [ ! -f "$app/$m" ]; then
+              echo "::error::$m is not in the app bundle. Bundle.main.path(forResource:) will return \"\" and inference will fail at runtime."
+              exit 1
+            fi
+            printf '    %-28s %s\n' "$m" "$(du -h "$app/$m" | cut -f1)"
+          done
+
+          # Apple's hard cap is 4 GB uncompressed. Warn well before it so a
+          # model swap that pushes past the limit is caught here rather than
+          # by App Store Connect after a full upload.
+          total_kb=$(du -sk "$app" | cut -f1)
+          echo "--- total uncompressed app size: $((total_kb / 1024)) MB ---"
+          if [ "$total_kb" -lt 20480 ]; then
+            echo "::error::App is only $((total_kb / 1024)) MB. A correct build with both engines and models is ~2 GB; under 20 MB means native code and/or models are missing."
+            exit 1
+          fi
+          if [ "$total_kb" -gt 3670016 ]; then
+            echo "::error::App is $((total_kb / 1024)) MB, over Apple's 4 GB uncompressed limit. App Store Connect will reject this build."
+            exit 1
           fi
 
       # CI-04: pin to a SHA (see the note on the checkout step).

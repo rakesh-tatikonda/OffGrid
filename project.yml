@@ -76,11 +76,34 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
 
+    # Both products are declared `.library(type: .dynamic)` in
+    # ThirdParty/Package.swift, so they must be EMBEDDED in the app bundle,
+    # not merely linked. Linking alone satisfies the build but leaves the
+    # dylibs out of Payload/…app/Frameworks/, which produces a ~300 KB IPA
+    # that dies in dyld before main() with:
+    #     dyld[…]: Library not loaded: @rpath/libWhisperEngine.dylib
+    #     Termination Reason: DYLD, [1] Library missing
+    #
+    # Do NOT "fix" this by switching Package.swift to .static — whisper.cpp
+    # and llama.cpp each vendor their own copy of ggml, so static linking
+    # both yields duplicate-symbol errors on ggml_*. The dynamic split is
+    # deliberate.
+    #
+    # VERIFY after `xcodegen generate`: open the project, select the
+    # CapSureTranscribe target -> General -> "Frameworks, Libraries, and
+    # Embedded Content". Both products must read "Embed & Sign". If XcodeGen's
+    # `embed` key is not honoured for package products in your version, add
+    # them there manually, or add an explicit Copy Files phase with
+    # destination "Frameworks".
     dependencies:
       - package: OffGridNativeEngines
         product: WhisperEngine
+        embed: true
+        codeSign: true
       - package: OffGridNativeEngines
         product: LlamaEngine
+        embed: true
+        codeSign: true
 
 # Explicit shared scheme. Without this, XcodeGen emits no scheme and
 # `xcodebuild -scheme CapSureTranscribe` can fail in CI with
