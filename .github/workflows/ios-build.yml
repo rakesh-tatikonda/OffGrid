@@ -327,9 +327,19 @@ jobs:
           MODELS_DIR="OffGrid/Resources/Models"
           mkdir -p "$MODELS_DIR"
 
+          # Secrets OVERRIDE these defaults. The defaults exist so a fresh
+          # clone builds without any repository configuration at all.
+          #
+          # For production you should still set the secrets and point them at
+          # your OWN mirror (a GitHub release asset, or a presigned S3/GCS
+          # URL). Depending on a third party's Hugging Face repo for every
+          # release build means their rename, deletion, or rate limit becomes
+          # your build failure.
+          WHISPER_URL="${MODEL_WHISPER_URL:-https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin}"
+          LLAMA_URL="${MODEL_LLAMA_URL:-https://huggingface.co/BafS/gemma-2-2b-it-Q4_K_M-GGUF/resolve/main/gemma-2-2b-it-q4_k_m.gguf}"
+
           if [ -z "${MODEL_WHISPER_URL:-}" ] || [ -z "${MODEL_LLAMA_URL:-}" ]; then
-            echo "::error::MODEL_WHISPER_URL and/or MODEL_LLAMA_URL are not set. The IPA would ship without on-device models and fail at inference on every device. Add them as repository secrets."
-            exit 1
+            echo "::warning::Using default public model URLs. Set MODEL_WHISPER_URL / MODEL_LLAMA_URL secrets to point at your own mirror before shipping."
           fi
 
           AUTH=()
@@ -353,8 +363,8 @@ jobs:
             fi
           }
 
-          fetch "$MODEL_WHISPER_URL" "$MODELS_DIR/ggml-small-encoder.bin" 400000000 "speech model"
-          fetch "$MODEL_LLAMA_URL"   "$MODELS_DIR/gemma-2b-q4_k_m.gguf"   800000000 "text model"
+          fetch "$WHISPER_URL" "$MODELS_DIR/ggml-small-encoder.bin" 400000000 "speech model"
+          fetch "$LLAMA_URL"   "$MODELS_DIR/gemma-2b-q4_k_m.gguf"   800000000 "text model"
 
           echo "total model payload: $(du -sh "$MODELS_DIR" | cut -f1)"
 

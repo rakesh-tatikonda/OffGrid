@@ -90,7 +90,8 @@ export HF_TOKEN="hf_..."                    # only if the repo is gated
 MODE=production ./scripts/setup-models.sh   # or MODE=testing
 ```
 
-In CI, three repository secrets:
+In CI, models now download from **public defaults with no configuration**, so
+a fresh clone builds green. Three optional secrets override them:
 
 ```
 MODEL_WHISPER_URL   -> OffGrid/Resources/Models/ggml-small-encoder.bin
@@ -101,6 +102,9 @@ MODEL_AUTH_TOKEN    -> optional bearer token for gated/private sources
 Both filenames are load-bearing — they must match the
 `Bundle.main.path(forResource:)` lookups in `OffGridApp.swift` exactly,
 whatever the upstream file was called.
+
+The defaults are third-party Hugging Face repos. They are fine for getting a
+build running; they are not something to depend on for releases.
 
 **Mirror the weights to your own storage rather than pulling from Hugging
 Face in CI.** A release asset or a presigned S3/GCS URL removes the gating and
