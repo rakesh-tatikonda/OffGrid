@@ -12,6 +12,10 @@ on:
         description: "Upload the IPA to App Store Connect"
         type: boolean
         default: false
+      skip_models:
+        description: "Diagnostic build: skip model download, expect a ~20 MB IPA"
+        type: boolean
+        default: false
 
 # CI-05: the original declared no `permissions:` block, so this job inherited
 # the repository default GITHUB_TOKEN scope — read/write across contents,
@@ -309,6 +313,7 @@ jobs:
       # not as a build failure — so it is checked explicitly below.
       # ---------------------------------------------------------------------
       - name: Fetch on-device models
+        if: ${{ !inputs.skip_models }}
         env:
           MODEL_WHISPER_URL: ${{ secrets.MODEL_WHISPER_URL }}
           MODEL_LLAMA_URL: ${{ secrets.MODEL_LLAMA_URL }}
@@ -374,6 +379,8 @@ jobs:
             -exportPath "$PWD/build/export"
 
       - name: Confirm the IPA carries the expected version
+        env:
+          SKIP_MODELS: ${{ inputs.skip_models }}
         run: |
           IPA=$(ls build/export/*.ipa | head -1)
           echo "IPA_PATH=$IPA" >> "$GITHUB_ENV"
@@ -416,21 +423,34 @@ jobs:
           done
 
           echo "--- bundled models ---"
-          for m in ggml-small-encoder.bin gemma-2b-q4_k_m.gguf; do
-            if [ ! -f "$app/$m" ]; then
-              echo "::error::$m is not in the app bundle. Bundle.main.path(forResource:) will return \"\" and inference will fail at runtime."
-              exit 1
-            fi
-            printf '    %-28s %s\n' "$m" "$(du -h "$app/$m" | cut -f1)"
-          done
+          if [ "${SKIP_MODELS}" = "true" ]; then
+            echo "    skipped (diagnostic build)"
+          else
+            for m in ggml-small-encoder.bin gemma-2b-q4_k_m.gguf; do
+              if [ ! -f "$app/$m" ]; then
+                echo "::error::$m is not in the app bundle. Bundle.main.path(forResource:) will return \"\" and inference will fail at runtime."
+                exit 1
+              fi
+              printf '    %-28s %s\n' "$m" "$(du -h "$app/$m" | cut -f1)"
+            done
+          fi
 
           # Apple's hard cap is 4 GB uncompressed. Warn well before it so a
           # model swap that pushes past the limit is caught here rather than
           # by App Store Connect after a full upload.
           total_kb=$(du -sk "$app" | cut -f1)
           echo "--- total uncompressed app size: $((total_kb / 1024)) MB ---"
-          if [ "$total_kb" -lt 20480 ]; then
-            echo "::error::App is only $((total_kb / 1024)) MB. A correct build with both engines and models is ~2 GB; under 20 MB means native code and/or models are missing."
+
+          # A correct build is ~20 MB with no models and ~2 GB with them.
+          # Anything in the hundreds of KB means the engines are absent.
+          if [ "${SKIP_MODELS}" = "true" ]; then
+            floor_kb=5120        # 5 MB — engines present, models deliberately absent
+          else
+            floor_kb=20480       # 20 MB — engines present, models expected too
+          fi
+
+          if [ "$total_kb" -lt "$floor_kb" ]; then
+            echo "::error::App is only $((total_kb / 1024)) MB, under the $((floor_kb / 1024)) MB floor. Native code and/or models are missing from the bundle."
             exit 1
           fi
           if [ "$total_kb" -gt 3670016 ]; then

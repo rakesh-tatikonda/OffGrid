@@ -108,6 +108,21 @@ token problem, survives an upstream repo being renamed or deleted, avoids rate
 limits, and makes builds reproducible. Fetching a third party's file on every
 release build makes your pipeline depend on their uptime and their naming.
 
+### Diagnostic build (verify embedding without models)
+
+To confirm the `embed: true` fix worked without sourcing 2 GB of weights
+first, run the workflow manually with **skip_models** checked:
+
+    Actions -> iOS Build and Export -> Run workflow -> skip_models ✓
+
+The model download is skipped, the model assertions are relaxed, but the
+`Frameworks/` check still runs. Expect a **~20 MB** IPA. If it is still a few
+hundred KB, embedding did not take and the build fails with that message
+rather than producing a crashing artifact.
+
+Do not use this for anything you intend to install — an IPA built this way
+will launch and then fail at inference with "model missing from this build".
+
 ### Text model: licence and prompt format
 
 Two things to settle before shipping, neither of which is a technical problem:
